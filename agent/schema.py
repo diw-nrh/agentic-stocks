@@ -3,7 +3,7 @@ from typing import List, Dict
 
 class PlanOption(BaseModel):
     option_id: int
-    tasks: Dict[str, str] = Field(description="ใช้ key เป็นชื่อ agent (weather_agent, news_agent, stocks_agent) และ value เป็นคำสั่ง")
+    tasks: Dict[str, str] = Field(description="ใช้ key เป็นชื่อ agent (weather_agent, news_agent, stocks_agent) และ value เป็นคำสั่ง (กฏเหล็ก : ถ้าไม่ต้องใช้ agent ตัวใด ไม่จำเป็นต้องมี key นั้น)")
     rationale: str = Field(description="เหตุผลว่าทำไมแผนนี้ถึงดี")
 
 class ToTGenerator(BaseModel):

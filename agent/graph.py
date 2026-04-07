@@ -1,13 +1,17 @@
 #multi agent planner graph
+import sys
+import os
 from langgraph.graph import StateGraph,END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.registry import TOOLS
 from shared.config import Config
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel
+from langchain.agents import create_agent
 from state import main_state
 from schema import ToTGenerator, ToTEvaluator
+from langchain_core.messages import HumanMessage
 llm = ChatOpenAI(model=Config.AI.MODEL_NAME, 
                    api_key=Config.AI.NOVITA_API_KEY, 
                    base_url=Config.AI.BASE_URL)
@@ -15,11 +19,13 @@ llm = ChatOpenAI(model=Config.AI.MODEL_NAME,
 
 def route_to_agents(state: main_state):
     tasks = state.get("agent_tasks", {})
+    if not tasks:
+        return "fusion_node"
     return list(tasks.keys())
 
 # Planner node
 def planner_node(state: main_state):
-    user_input = state.messages[-1].content
+    user_input = state["messages"][-1].content
     
     #สร้างทางเลือกแผนงาน 3 แบบ
     generator_prompt = ChatPromptTemplate.from_messages([
@@ -50,32 +56,42 @@ def planner_node(state: main_state):
 
 #  Specific agent nodes
 def weather_agent_node(state: main_state):
-    prompt =ChatPromptTemplate.from_messages([
-        ("system", "คุณคือ weather_agent ที่เชี่ยวชาญในการให้ข้อมูลสภาพอากาศ"),
-        ("user", "จงทำตามคำสั่งนี้: {input}")
-    ])
-    llm_weather = prompt | llm.with_structured_output(str)
-    return {"agent_tasks": {**state.agent_tasks, "weather": "weather"}}
+    
+    llm_weather = create_agent(model=llm, tools=TOOLS)
+    result = llm_weather.invoke({
+        "messages": state["agent_tasks"].get("weather_agent")})
+    return {"agent_results": {"weather": result}}
+
 def news_agent_node(state: main_state):
-    return {"agent_tasks": {**state.agent_tasks, "news": "news"}}
+    llm_news = create_agent(model=llm, tools=TOOLS)
+    result = llm_news.invoke({
+        "messages": state["agent_tasks"].get("news_agent")})
+    return {"agent_results": {"news": result}}
+
 def stocks_agent_node(state: main_state):
-    return {"agent_tasks": {**state.agent_tasks, "stocks": "stocks"}}
+    llm_stocks = create_agent(model=llm, tools=TOOLS)
+    result = llm_stocks.invoke({
+        "messages": state["agent_tasks"].get("stocks_agent")})
+    return {"agent_results": {"stocks": result}}
+
 # Fusion and presentation nodes
 def fusion_node(state: main_state):
-    return {"agent_tasks": {**state.agent_tasks}}
+    results = llm.invoke(f"จงสรุปข้อมูลต่อไปนี้ให้เป็นรายงานฉบับสมบูรณ์: {state['agent_results']}")
+    return {"fusion_results": results}
+
 def presentation_node(state: main_state):
-    return {"agent_tasks": {**state.agent_tasks}}
+    return {"results": state['fusion_results']}
 
-app = StateGraph(main_state)
-app.add_node("planner", planner_node)
-app.add_node("weather_agent", weather_agent_node)
-app.add_node("news_agent", news_agent_node)
-app.add_node("stocks_agent", stocks_agent_node)
-app.add_node("fusion", fusion_node, tools_condition(TOOLS))
-app.add_node("presentation", presentation_node)
+workflow = StateGraph(main_state)
+workflow.add_node("planner", planner_node)
+workflow.add_node("weather_agent", weather_agent_node)
+workflow.add_node("news_agent", news_agent_node)
+workflow.add_node("stocks_agent", stocks_agent_node)
+workflow.add_node("fusion", fusion_node)
+workflow.add_node("presentation", presentation_node)
 
-app.set_entry_point("planner")
-app.add_conditional_edges(
+workflow.set_entry_point("planner")
+workflow.add_conditional_edges(
     "planner", 
     route_to_agents,
     {
@@ -85,8 +101,9 @@ app.add_conditional_edges(
         "fusion": "fusion"
     }
 )
-app.add_edge("weather_agent", "fusion")
-app.add_edge("news_agent", "fusion")
-app.add_edge("stocks_agent", "fusion")
-app.add_edge("fusion", "presentation")
-app.add_edge("presentation", END)
+workflow.add_edge("weather_agent", "fusion")
+workflow.add_edge("news_agent", "fusion")
+workflow.add_edge("stocks_agent", "fusion")
+workflow.add_edge("fusion", "presentation")
+workflow.add_edge("presentation", END)
+app = workflow.compile()
