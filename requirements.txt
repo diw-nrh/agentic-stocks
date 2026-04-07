@@ -7,5 +7,7 @@ pydantic
 langchain
 langgraph
 langchain-ollama
+langchain_openai
 
 mcp
+fastmcp
