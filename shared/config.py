@@ -10,7 +10,7 @@ class Config:
     BASE_URL = "https://api.novita.ai/openai"
     
     # MCP Server
-    MCP_SERVER_URL = "http://localhost:9001"
+    MCP_SERVER_WEATHER_URL = "http://localhost:9001"
     
     @classmethod
     def validate(cls):
