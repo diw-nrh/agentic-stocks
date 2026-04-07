@@ -1,16 +1,12 @@
-import os
-from dotenv import load_dotenv
-
-from langgraph.graph import StateGraph, END, MessagesState
+from langgraph.graph import StateGraph, MessagesState
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 from tools.registry import TOOLS
+from shared.config import Config
 
-load_dotenv()
-
-model = ChatOpenAI(model="deepseek/deepseek-v3.2", 
-                   api_key=os.getenv("NOVITA_API_KEY"), 
-                   base_url="https://api.novita.ai/openai")
+model = ChatOpenAI(model=Config.MODEL_NAME, 
+                   api_key=Config.NOVITA_API_KEY, 
+                   base_url=Config.BASE_URL)
 
 llm_with_tools = model.bind_tools(TOOLS)
 
@@ -30,11 +26,7 @@ graph.set_entry_point("agent")
 
 graph.add_conditional_edges(
     "agent",
-    tools_condition,
-    {
-        "tools": "tools",
-        "__end__": END,
-    },
+    tools_condition
 )
 
 graph.add_edge("tools", "agent")
