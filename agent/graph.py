@@ -4,9 +4,9 @@ from langchain_openai import ChatOpenAI
 from tools.registry import TOOLS
 from shared.config import Config
 
-model = ChatOpenAI(model=Config.MODEL_NAME, 
-                   api_key=Config.NOVITA_API_KEY, 
-                   base_url=Config.BASE_URL)
+model = ChatOpenAI(model=Config.AI.MODEL_NAME, 
+                   api_key=Config.AI.NOVITA_API_KEY, 
+                   base_url=Config.AI.BASE_URL)
 
 llm_with_tools = model.bind_tools(TOOLS)
 
