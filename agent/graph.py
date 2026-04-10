@@ -5,7 +5,7 @@ from langgraph.graph import StateGraph,END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.registry import TOOLS
+from tools.registry import TOOLS,weather,stock
 from shared.config import Config
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_agent
@@ -57,7 +57,7 @@ def planner_node(state: main_state):
 #  Specific agent nodes
 def weather_agent_node(state: main_state):
     
-    llm_weather = create_agent(model=llm, tools=TOOLS)
+    llm_weather = create_agent(model=llm, tools=[weather])
     result = llm_weather.invoke({
         "messages": state["agent_tasks"].get("weather_agent")})
     return {"agent_results": {"weather": result}}
@@ -69,7 +69,7 @@ def news_agent_node(state: main_state):
     return {"agent_results": {"news": result}}
 
 def stocks_agent_node(state: main_state):
-    llm_stocks = create_agent(model=llm, tools=TOOLS)
+    llm_stocks = create_agent(model=llm, tools=[stock])
     result = llm_stocks.invoke({
         "messages": state["agent_tasks"].get("stocks_agent")})
     return {"agent_results": {"stocks": result}}
