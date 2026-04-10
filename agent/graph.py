@@ -5,7 +5,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt,weather
+from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt
 from shared.config import Config
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_agent
@@ -26,54 +26,62 @@ def route_to_agents(state: main_state):
 # Planner node
 def planner_node(state: main_state):
     user_input = state["messages"][-1].content
-    
-    # 1. Task Extraction: บังคับแปลงคำกว้างๆ ให้เป็นข้อมูลที่ Tools ต้องการจริงๆ
+    weather_skill_prompt = get_select_skills_prompt("skills/weather")
+    stocks_skill_prompt = get_select_skills_prompt("skills/stocks")
+
+    # แปลงข้อความให้ระบุวัตถุประสงค์ของผู้ใช้ชัดเจนขึ้น
     refined_task = llm.invoke(
-        "Analyze the following user input and extract a clear, actionable task. "
-        "CRITICAL RULES: "
-        "1. If a broad location (e.g., 'America', 'World') is mentioned, generate a list of 3-4 specific major cities representing that region. "
-        "2. If stocks or sectors are mentioned without specific symbols, generate a list of 3-4 highly relevant stock ticker symbols (e.g., AAPL, TSLA). "
-        "Output the explicit objective and these specific lists. "
+        "You are a task router. Analyze the user input and determine which agents are needed.\n\n"
+        "## AVAILABLE AGENTS & THEIR TOOLS:\n"
+        f"### weather_agent capabilities:\n{weather_skill_prompt}\n\n"
+        f"### stocks_agent capabilities:\n{stocks_skill_prompt}\n\n"
+        "## YOUR JOB:\n"
+        "1. Identify what the user is asking for — weather only, stocks only, or both.\n"
+        "2. If weather is needed: extract the specific city/cities mentioned.\n"
+        "3. If stocks are needed: extract the specific tickers or companies mentioned.\n"
+        "4. ONLY include agents that are directly relevant to the user's request.\n"
+        "   - User asks 'weather in Bangkok' → weather_agent only\n"
+        "   - User asks 'AAPL stock price' → stocks_agent only\n"
+        "   - User asks 'how does rain affect energy stocks' → both agents\n\n"
+        "Output a clear, minimal task description for each required agent.\n"
         f"User input: {user_input}"
     ).content
-    
-    # 2. Generator Prompt: สอนหัวหน้าให้รู้จักสกิลลูกน้อง และบังคับวิธีเขียนสั่งงาน
+
+    # 2. ออกแบบแผนมา 3 แบบ ToT
     generator_prompt = ChatPromptTemplate.from_messages([
-        ("system", 
-         "You are a master Multi-Agent system planner. You must design 3 different work plans.\n\n"
-         "### YOUR AGENTS' SKILLS & LIMITATIONS:\n"
-         "1. weather_agent:\n"
-         "   - Skill: Retrieves current weather for a specific city.\n"
-         "   - Limitation: CANNOT search entire countries/regions at once. Needs specific city names.\n"
-         "2. stocks_agent:\n"
-         "   - Skill: Retrieves financial data using a specific stock ticker symbol.\n"
-         "   - Limitation: CANNOT search by company name or sector. Needs exact tickers (e.g., AAPL).\n\n"
-         "### INSTRUCTION FORMATTING RULE:\n"
-         "When writing the 'tasks' dictionary, your instructions to each agent MUST be highly detailed step-by-step commands. "
-         "You MUST explicitly list the parameters (cities, tickers) they need to use, and state exactly how many times they should use their tools.\n"
-         "Example Bad Instruction: 'Check weather in the US.'\n"
-         "Example Good Instruction: 'Use your weather tool exactly 3 times to check the conditions for: New York, Chicago, and Miami. Then summarize the findings.'"),
-        ("user", "The extracted task details are: {input}")
+        ("system",
+         "You are a Multi-Agent system planner. Design 3 lean work plans based on the task analysis.\n\n"
+         "## AGENT CAPABILITIES:\n"
+         f"### weather_agent:\n{weather_skill_prompt}\n\n"
+         f"### stocks_agent:\n{stocks_skill_prompt}\n\n"
+         "## RULES:\n"
+         "1. Only assign tasks to agents that are actually needed for the user's request.\n"
+         "2. If only weather is needed, plans should only contain 'weather_agent'.\n"
+         "3. If only stocks are needed, plans should only contain 'stocks_agent'.\n"
+         "4. For stocks_agent instructions: provide ONLY a comma-separated list of tickers, no sector labels.\n"
+         "5. Keep scope minimal — do not expand the request beyond what the user asked."),
+        ("user", "Task analysis: {input}")
     ])
-    
+
     llm_generator = generator_prompt | llm.with_structured_output(ToTGenerator)
     tot_drafts = llm_generator.invoke({"input": refined_task})
-    
-    # Evaluate and select the best plan
+
+    # เลือกตัวที่ดีที่สุด
     evaluator_prompt = ChatPromptTemplate.from_messages([
-        ("system", 
-         "You are the head plan evaluator. Read all 3 plan options and select the one that is 'most comprehensive, explicitly detailed, and utilizes the Agents' specific skills correctly'."),
-        ("user", "Extracted task: {input}\n\nPlan options:\n{options}")
+        ("system",
+         "You are a plan evaluator. Select the plan that best matches what the user actually asked for.\n"
+         "Prefer plans that are focused and minimal — do NOT favor plans that use more agents or gather more data than necessary."),
+        ("user", "User's original request: {input}\n\nPlan options:\n{options}")
     ])
-    
+
     llm_evaluator = evaluator_prompt | llm.with_structured_output(ToTEvaluator)
     evaluation_result = llm_evaluator.invoke({
-        "input": refined_task,
+        "input": user_input,  # ใช้ user_input ตรงๆ ไม่ใช่ refined_task
         "options": tot_drafts.json()
     })
-    
+
     best_plan = next(opt for opt in tot_drafts.options if opt.option_id == evaluation_result.best_option_id)
-    
+
     return {"agent_tasks": best_plan.tasks}
 
 # Specific agent nodes
@@ -85,7 +93,7 @@ def weather_agent_node(state: main_state):
         messages.append({"role": "user", "content": weather_task})
     elif isinstance(weather_task, list):
         messages.extend(weather_task)
-    llm_weather = create_agent(model=llm, tools=[weather])
+    llm_weather = create_agent(model=llm, tools=TOOLS_WEATHER)
     result = llm_weather.invoke({
         "messages": messages})
     return {"agent_results": {"weather": result}}
@@ -104,7 +112,17 @@ def stocks_agent_node(state: main_state):
 
 # Fusion and presentation nodes
 def fusion_node(state: main_state):
-    results = llm.invoke(f"Summarize the following data into a complete report: {state['agent_results']}")
+    user_question = state["messages"][-1].content
+    prompt = (
+        f"You are an expert Data Analyst. The user asked this specific question: '{user_question}'\n\n"
+        "YOUR TASK:\n"
+        "1. Answer the user's question directly using ONLY the gathered data below.\n"
+        "2. DO NOT force a correlation if the user didn't ask for one (e.g., if they only asked for the weather, just report the weather professionally).\n"
+        "3. IF the user asked for a relationship or correlation AND the data supports it, explicitly explain the connection.\n\n"
+        f"Agent Data: {state['agent_results']}"
+    )
+    
+    results = llm.invoke(prompt).content
     return {"fusion_results": results}
 
 def presentation_node(state: main_state):
