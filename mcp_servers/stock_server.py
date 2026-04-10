@@ -17,11 +17,9 @@ async def stock(symbols: str, period: str = "current", start: str = None, end: s
 
     data = r.json()
     
-    # Check if the response is a dictionary containing an error
     if isinstance(data, dict) and "error" in data:
         return f"Error: {data['error']}"
 
-    # Return the stock data as a string (since it's a list of dictionaries)
     return str(data)
 
 if __name__ == "__main__":

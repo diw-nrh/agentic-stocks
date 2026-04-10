@@ -33,7 +33,7 @@ def weather(location: str, period: WeatherPeriod = WeatherPeriod.CURRENT, dt: st
     Supports current, 7-day forecast, and historical data.
     If period is 'historical', you can optionally specify 'dt' in YYYY-MM-DD format.
     """
-    # Using Config.Weather.URL to support both local and docker environments
+
     url = f"{Config.Weather.URL}/weather?location={location}&period={period.value}"
     if dt:
         url += f"&dt={dt}"
