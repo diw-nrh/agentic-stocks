@@ -11,3 +11,5 @@ langchain_openai
 
 mcp
 fastmcp
+
+yfinance 
