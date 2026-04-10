@@ -18,9 +18,9 @@ async def stock(symbols: str, period: str = "current", start: str = None, end: s
     data = r.json()
     
     if isinstance(data, dict) and "error" in data:
-        return f"Error: {data['error']}"
+        return f"Error fetching {symbols}: {data['error']}"
 
-    return str(data)
+    return str({"ticker": symbols, "data": data})  # ✅ ติด label ทันที
 
 if __name__ == "__main__":
     mcp.run(transport="sse")

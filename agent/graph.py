@@ -34,10 +34,12 @@ def planner_node(state: main_state):
 
         "## RULES:\n"
         "1. Only assign tasks to agents that are actually needed for the user's request.\n"
-        "2. If only weather is needed, plans should only contain 'weather_agent'.\n"
-        "3. If only stocks are needed, plans should only contain 'stocks_agent'.\n"
-        "4. Keep scope minimal — do not expand the request beyond what the user asked.\n"
-        "5. If both agents are needed, each task must be self-contained and independent.\n"
+        "2. stocks_agent task MUST always include fetching real price data for specific tickers. "
+            "Never instruct it to do analysis only without calling stock tools.\n"
+        "3. If only weather is needed, plans should only contain 'weather_agent'.\n"
+        "4. If only stocks are needed, plans should only contain 'stocks_agent'.\n"
+        "5. Keep scope minimal — do not expand the request beyond what the user asked.\n"
+        "6. If both agents are needed, each task must be self-contained and independent.\n"
         "   Give stocks_agent a broad instruction covering likely scenarios,\n"
         "   so fusion can match results later. Never reference the other agent's output.\n"
         "   Bad: 'find tickers based on the identified weather' → "
@@ -88,8 +90,8 @@ def stocks_agent_node(state: main_state):
     # --- Pre-processor: สรุปว่าควรดูหุ้นตัวไหน ---
     ticker_prompt = ChatPromptTemplate.from_messages([
         ("system",
-         "You are a financial analyst. Given a task, summarize which stocks or sectors to investigate and why.\n"
-         "Be concise and direct. Write in plain text."),
+        "You are a financial analyst. Given a task, list the specific stock tickers that should be fetched and investigated.\n"
+        "Always return actual ticker symbols (e.g. HD, KMI, NEE). Be concise and direct. Write in plain text."),
         ("user", "Task: {task}")
     ])
     
@@ -102,10 +104,14 @@ def stocks_agent_node(state: main_state):
     skill_prompt = get_select_skills_prompt("skills/stock")
     system = (
         "stock agent skill tool: " + skill_prompt +
-        "\nComplete the task autonomously. Never ask the user for input." +
+        "\nComplete the task autonomously. Never ask the user for input."
+        "\nWhen fetching stock data, you MUST call the stock tool ONE ticker at a time. "
+        "Never pass multiple tickers in a single call. "
+        "Example: call stock('HD'), then stock('LOW'), then stock('NEE') separately."
         "\nWhen returning results, always include the ticker symbol with each data point. "
-        "Format: TICKER: <price info>. Never return raw numbers without labeling which stock they belong to."
+        "Format: TICKER: <price info>."
     )
+
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": enriched_task}
