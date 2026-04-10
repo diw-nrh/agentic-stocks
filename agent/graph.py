@@ -27,23 +27,19 @@ def route_to_agents(state: main_state):
 def planner_node(state: main_state):
     user_input = state["messages"][-1].content
     weather_skill_prompt = get_select_skills_prompt("skills/weather")
-    stocks_skill_prompt = get_select_skills_prompt("skills/stocks")
-
-    # แปลงข้อความให้ระบุวัตถุประสงค์ของผู้ใช้ชัดเจนขึ้น
+    stocks_skill_prompt = get_select_skills_prompt("skills/stock")
+    
     refined_task = llm.invoke(
-        "You are a task router. Analyze the user input and determine which agents are needed.\n\n"
-        "## AVAILABLE AGENTS & THEIR TOOLS:\n"
-        f"### weather_agent capabilities:\n{weather_skill_prompt}\n\n"
-        f"### stocks_agent capabilities:\n{stocks_skill_prompt}\n\n"
-        "## YOUR JOB:\n"
-        "1. Identify what the user is asking for — weather only, stocks only, or both.\n"
-        "2. If weather is needed: extract the specific city/cities mentioned.\n"
-        "3. If stocks are needed: extract the specific tickers or companies mentioned.\n"
-        "4. ONLY include agents that are directly relevant to the user's request.\n"
-        "   - User asks 'weather in Bangkok' → weather_agent only\n"
-        "   - User asks 'AAPL stock price' → stocks_agent only\n"
-        "   - User asks 'how does rain affect energy stocks' → both agents\n\n"
-        "Output a clear, minimal task description for each required agent.\n"
+        "You are a User Intent Analyzer. Your job is to summarize the user's request into a structured context for a planning agent.\n\n"
+        "## EXTRACTION RULES:\n"
+        "1. Identify the 'primary_topic' (e.g., Stock recommendation, Weather inquiry).\n"
+        "2. Identify the 'location'.\n"
+        "3. Identify any 'constraints' or 'specific_interests' (e.g., Weather-dependent, specific sectors).\n"
+        "4. Summarize the 'goal' in one clear sentence.\n\n"
+        
+        "## OUTPUT FORMAT:\n"
+        "Return only a concise summary. Example: 'User wants stock recommendations for New York based on current sunny weather conditions.'\n\n"
+        
         f"User input: {user_input}"
     ).content
 
@@ -99,7 +95,7 @@ def weather_agent_node(state: main_state):
     return {"agent_results": {"weather": result}}
 
 def stocks_agent_node(state: main_state):
-    skill_prompt = get_select_skills_prompt("skills/stocks")
+    skill_prompt = get_select_skills_prompt("skills/stock")
     messages = [{"role": "system", "content": skill_prompt}]
     stocks_task = state.get("agent_tasks", {}).get("stocks_agent", "")
     if isinstance(stocks_task, str) and stocks_task.strip():
@@ -114,15 +110,12 @@ def stocks_agent_node(state: main_state):
 def fusion_node(state: main_state):
     user_question = state["messages"][-1].content
     prompt = (
-        f"You are an expert Data Analyst. The user asked this specific question: '{user_question}'\n\n"
-        "YOUR TASK:\n"
-        "1. Answer the user's question directly using ONLY the gathered data below.\n"
-        "2. DO NOT force a correlation if the user didn't ask for one (e.g., if they only asked for the weather, just report the weather professionally).\n"
-        "3. IF the user asked for a relationship or correlation AND the data supports it, explicitly explain the connection.\n\n"
-        f"Agent Data: {state['agent_results']}"
+        f"You are an expert analyst. Answer the user's question using the data below.\n\n"
+        f"Question: {user_question}\n\n"
+        f"Data: {state['agent_results']}"
     )
     
-    results = llm.invoke(prompt).content
+    results = llm.invoke(prompt)
     return {"fusion_results": results}
 
 def presentation_node(state: main_state):
