@@ -5,14 +5,15 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from shared.config import Config
 
-def get_weather(location: str, period: str = "current"):
+def get_weather(location: str, period: str = "current", dt: str = None) -> dict:
     api_key = Config.Weather.OPENWEATHER_API_KEY
     base_url = "http://api.weatherapi.com/v1"
     
     if period == "forecast":
         url = f"{base_url}/forecast.json?key={api_key}&q={location}&days=7&lang=th"
     elif period == "historical":
-        url = f"{base_url}/history.json?key={api_key}&q={location}&dt=2024-03-24&lang=th"
+        historical_dt = dt or "2024-03-24"
+        url = f"{base_url}/history.json?key={api_key}&q={location}&dt={historical_dt}&lang=th"
     else:
         url = f"{base_url}/current.json?key={api_key}&q={location}&lang=th"
 

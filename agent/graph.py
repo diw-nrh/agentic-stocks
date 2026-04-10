@@ -5,7 +5,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, stock, get_select_skills_prompt
+from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt,weather
 from shared.config import Config
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_agent
@@ -65,8 +65,12 @@ def planner_node(state: main_state):
 def weather_agent_node(state: main_state):
     skill_prompt = get_select_skills_prompt("skills/weather")
     messages = [{"role": "system", "content": skill_prompt}]
-    messages += state["agent_tasks"].get("weather_agent", [])
-    llm_weather = create_agent(model=llm, tools=TOOLS_WEATHER)
+    weather_task = state.get("agent_tasks", {}).get("weather_agent", "")
+    if isinstance(weather_task, str) and weather_task.strip():
+        messages.append({"role": "user", "content": weather_task})
+    elif isinstance(weather_task, list):
+        messages.extend(weather_task)
+    llm_weather = create_agent(model=llm, tools=[weather])
     result = llm_weather.invoke({
         "messages": messages})
     return {"agent_results": {"weather": result}}
@@ -74,7 +78,11 @@ def weather_agent_node(state: main_state):
 def stocks_agent_node(state: main_state):
     skill_prompt = get_select_skills_prompt("skills/stocks")
     messages = [{"role": "system", "content": skill_prompt}]
-    messages += state["agent_tasks"].get("stocks_agent", [])
+    stocks_task = state.get("agent_tasks", {}).get("stocks_agent", "")
+    if isinstance(stocks_task, str) and stocks_task.strip():
+        messages.append({"role": "user", "content": stocks_task})
+    elif isinstance(stocks_task, list):
+        messages.extend(stocks_task)
     llm_stocks = create_agent(model=llm, tools=TOOLS_STOCK)
     result = llm_stocks.invoke({"messages": messages})
     return {"agent_results": {"stocks": result}}
