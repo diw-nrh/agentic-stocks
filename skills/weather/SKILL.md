@@ -18,3 +18,4 @@ allowed-tools: [weather]
 - "What is the weather like in Thailand right now?" -> `weather(location="Thailand", period="current")`
 - "Show me the weather forecast for Chiang Mai next week." -> `weather(location="Chiang Mai", period="forecast")`
 - "What was the weather in Phuket on March 15, 2024?" -> `weather(location="Phuket", period="historical", dt="2024-03-15")`
+- - "What is the weather like in Thailand right now?" -> `weather(location="Thailand", period="current")`
