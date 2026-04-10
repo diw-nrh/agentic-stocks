@@ -2,7 +2,7 @@ from typing import TypedDict, Annotated, Any
 import operator
 from langchain_core.messages import AnyMessage
 
-class main_state(TypedDict):
+class main_state_mass(TypedDict):
     messages: Annotated[list[AnyMessage], operator.add]
     agent_tasks: dict
     agent_results: dict
