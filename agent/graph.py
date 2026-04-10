@@ -26,53 +26,41 @@ def route_to_agents(state: main_state):
 # Planner node
 def planner_node(state: main_state):
     user_input = state["messages"][-1].content
-    weather_skill_prompt = get_select_skills_prompt("skills/weather")
-    stocks_skill_prompt = get_select_skills_prompt("skills/stock")
-    
-    refined_task = llm.invoke(
-        "You are a User Intent Analyzer. Your job is to summarize the user's request into a structured context for a planning agent.\n\n"
-        "## EXTRACTION RULES:\n"
-        "1. Identify the 'primary_topic' (e.g., Stock recommendation, Weather inquiry).\n"
-        "2. Identify the 'location'.\n"
-        "3. Identify any 'constraints' or 'specific_interests' (e.g., Weather-dependent, specific sectors).\n"
-        "4. Summarize the 'goal' in one clear sentence.\n\n"
-        
-        "## OUTPUT FORMAT:\n"
-        "Return only a concise summary. Example: 'User wants stock recommendations for New York based on current sunny weather conditions.'\n\n"
-        
-        f"User input: {user_input}"
-    ).content
 
     # 2. ออกแบบแผนมา 3 แบบ ToT
     generator_prompt = ChatPromptTemplate.from_messages([
         ("system",
-         "You are a Multi-Agent system planner. Design 3 lean work plans based on the task analysis.\n\n"
-         "## AGENT CAPABILITIES:\n"
-         f"### weather_agent:\n{weather_skill_prompt}\n\n"
-         f"### stocks_agent:\n{stocks_skill_prompt}\n\n"
-         "## RULES:\n"
-         "1. Only assign tasks to agents that are actually needed for the user's request.\n"
-         "2. If only weather is needed, plans should only contain 'weather_agent'.\n"
-         "3. If only stocks are needed, plans should only contain 'stocks_agent'.\n"
-         "4. For stocks_agent instructions: provide ONLY a comma-separated list of tickers, no sector labels.\n"
-         "5. Keep scope minimal — do not expand the request beyond what the user asked."),
+        "You are a Multi-Agent system planner. Design 3 lean work plans based on the task analysis.\n\n"
+
+        "## RULES:\n"
+        "1. Only assign tasks to agents that are actually needed for the user's request.\n"
+        "2. If only weather is needed, plans should only contain 'weather_agent'.\n"
+        "3. If only stocks are needed, plans should only contain 'stocks_agent'.\n"
+        "4. Keep scope minimal — do not expand the request beyond what the user asked.\n"
+        "5. If both agents are needed, each task must be self-contained and independent.\n"
+        "   Give stocks_agent a broad instruction covering likely scenarios,\n"
+        "   so fusion can match results later. Never reference the other agent's output.\n"
+        "   Bad: 'find tickers based on the identified weather' → "
+        "   Good: 'fetch tickers for sectors commonly affected by U.S. weather conditions'\n"),
         ("user", "Task analysis: {input}")
     ])
 
     llm_generator = generator_prompt | llm.with_structured_output(ToTGenerator)
-    tot_drafts = llm_generator.invoke({"input": refined_task})
+    tot_drafts = llm_generator.invoke({"input": user_input})
 
     # เลือกตัวที่ดีที่สุด
     evaluator_prompt = ChatPromptTemplate.from_messages([
         ("system",
-         "You are a plan evaluator. Select the plan that best matches what the user actually asked for.\n"
-         "Prefer plans that are focused and minimal — do NOT favor plans that use more agents or gather more data than necessary."),
+        "You are a plan evaluator. Select the plan that best covers the user's question.\n"
+        "Prefer plans that gather all information needed to answer completely and accurately.\n"
+        "Penalize plans that are missing data sources the user's question depends on.\n"
+        "Only avoid redundancy — never sacrifice coverage for brevity."),
         ("user", "User's original request: {input}\n\nPlan options:\n{options}")
     ])
 
     llm_evaluator = evaluator_prompt | llm.with_structured_output(ToTEvaluator)
     evaluation_result = llm_evaluator.invoke({
-        "input": user_input,  # ใช้ user_input ตรงๆ ไม่ใช่ refined_task
+        "input": user_input,
         "options": tot_drafts.json()
     })
 
@@ -95,13 +83,33 @@ def weather_agent_node(state: main_state):
     return {"agent_results": {"weather": result}}
 
 def stocks_agent_node(state: main_state):
-    skill_prompt = get_select_skills_prompt("skills/stock")
-    messages = [{"role": "system", "content": skill_prompt}]
     stocks_task = state.get("agent_tasks", {}).get("stocks_agent", "")
-    if isinstance(stocks_task, str) and stocks_task.strip():
-        messages.append({"role": "user", "content": stocks_task})
-    elif isinstance(stocks_task, list):
-        messages.extend(stocks_task)
+
+    # --- Pre-processor: สรุปว่าควรดูหุ้นตัวไหน ---
+    ticker_prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are a financial analyst. Given a task, summarize which stocks or sectors to investigate and why.\n"
+         "Be concise and direct. Write in plain text."),
+        ("user", "Task: {task}")
+    ])
+    
+    ticker_summary = (ticker_prompt | llm).invoke({"task": stocks_task})
+    enriched_task = f"{stocks_task}\n\nStock focus: {ticker_summary.content}"
+    
+    print("=== enriched_task ===")  # ← เพิ่มตรงนี้
+    print(enriched_task)
+    # --- Stocks Agent ---
+    skill_prompt = get_select_skills_prompt("skills/stock")
+    system = (
+        "stock agent skill tool: " + skill_prompt +
+        "\nComplete the task autonomously. Never ask the user for input." +
+        "\nWhen returning results, always include the ticker symbol with each data point. "
+        "Format: TICKER: <price info>. Never return raw numbers without labeling which stock they belong to."
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": enriched_task}
+]
     llm_stocks = create_agent(model=llm, tools=TOOLS_STOCK)
     result = llm_stocks.invoke({"messages": messages})
     return {"agent_results": {"stocks": result}}

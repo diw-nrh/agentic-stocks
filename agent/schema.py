@@ -12,3 +12,4 @@ class ToTGenerator(BaseModel):
 class ToTEvaluator(BaseModel):
     best_option_id: int = Field(description="The ID of the most suitable plan.")
     critique: str = Field(description="The reason for selecting this plan and any potential caveats.")
+    
