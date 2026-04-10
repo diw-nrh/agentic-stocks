@@ -26,19 +26,34 @@ def route_to_agents(state: main_state):
 # Planner node
 def planner_node(state: main_state):
     user_input = state["messages"][-1].content
+    
+    # 1. Task Extraction: บังคับแปลงคำกว้างๆ ให้เป็นข้อมูลที่ Tools ต้องการจริงๆ
     refined_task = llm.invoke(
-        "Analyze the following user input and extract a clear, actionable task description for a multi-agent system. "
-        "Identify the core objective, specific parameters (e.g., locations, stock symbols, dates), and constraints. "
-        "Remove any conversational filler and output only the direct instructions. "
+        "Analyze the following user input and extract a clear, actionable task. "
+        "CRITICAL RULES: "
+        "1. If a broad location (e.g., 'America', 'World') is mentioned, generate a list of 3-4 specific major cities representing that region. "
+        "2. If stocks or sectors are mentioned without specific symbols, generate a list of 3-4 highly relevant stock ticker symbols (e.g., AAPL, TSLA). "
+        "Output the explicit objective and these specific lists. "
         f"User input: {user_input}"
     ).content
     
-    # Generate 3 plan options
+    # 2. Generator Prompt: สอนหัวหน้าให้รู้จักสกิลลูกน้อง และบังคับวิธีเขียนสั่งงาน
     generator_prompt = ChatPromptTemplate.from_messages([
         ("system", 
-         "You are a Multi-Agent system planner. You manage the following agents: weather_agent, stocks_agent. "
-         "Read the prompt and design 3 different work plans, for example: quantitative-focused, balanced, or data-focused."),
-        ("user", "The task is: {input}")
+         "You are a master Multi-Agent system planner. You must design 3 different work plans.\n\n"
+         "### YOUR AGENTS' SKILLS & LIMITATIONS:\n"
+         "1. weather_agent:\n"
+         "   - Skill: Retrieves current weather for a specific city.\n"
+         "   - Limitation: CANNOT search entire countries/regions at once. Needs specific city names.\n"
+         "2. stocks_agent:\n"
+         "   - Skill: Retrieves financial data using a specific stock ticker symbol.\n"
+         "   - Limitation: CANNOT search by company name or sector. Needs exact tickers (e.g., AAPL).\n\n"
+         "### INSTRUCTION FORMATTING RULE:\n"
+         "When writing the 'tasks' dictionary, your instructions to each agent MUST be highly detailed step-by-step commands. "
+         "You MUST explicitly list the parameters (cities, tickers) they need to use, and state exactly how many times they should use their tools.\n"
+         "Example Bad Instruction: 'Check weather in the US.'\n"
+         "Example Good Instruction: 'Use your weather tool exactly 3 times to check the conditions for: New York, Chicago, and Miami. Then summarize the findings.'"),
+        ("user", "The extracted task details are: {input}")
     ])
     
     llm_generator = generator_prompt | llm.with_structured_output(ToTGenerator)
@@ -47,8 +62,8 @@ def planner_node(state: main_state):
     # Evaluate and select the best plan
     evaluator_prompt = ChatPromptTemplate.from_messages([
         ("system", 
-         "You are the head plan evaluator. Read all 3 plan options and select the one that is 'most comprehensive and utilizes the Agents most effectively'."),
-        ("user", "User's task: {input}\n\nPlan options:\n{options}")
+         "You are the head plan evaluator. Read all 3 plan options and select the one that is 'most comprehensive, explicitly detailed, and utilizes the Agents' specific skills correctly'."),
+        ("user", "Extracted task: {input}\n\nPlan options:\n{options}")
     ])
     
     llm_evaluator = evaluator_prompt | llm.with_structured_output(ToTEvaluator)
