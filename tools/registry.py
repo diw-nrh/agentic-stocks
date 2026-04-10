@@ -22,7 +22,7 @@ class WeatherPeriod(str, Enum):
     HISTORICAL = "historical"
 
 @tool
-def get_weather(location: str, period: WeatherPeriod = WeatherPeriod.CURRENT, dt: str = None) -> str:
+def weather(location: str, period: WeatherPeriod = WeatherPeriod.CURRENT, dt: str = None) -> str:
     """
     Get weather data for any country or city. 
     Supports current, 7-day forecast, and historical data.
@@ -39,4 +39,4 @@ def get_weather(location: str, period: WeatherPeriod = WeatherPeriod.CURRENT, dt
     except Exception as e:
         return f"Error connecting to weather service: {e}"
 
-TOOLS = [get_weather]
+TOOLS = [weather]
