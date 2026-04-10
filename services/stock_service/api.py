@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Query
-from .service import get_stocks
+from services.stock_service.service import get_stocks
 
 app = FastAPI()
 

@@ -2,7 +2,7 @@ from mcp.server.fastmcp import FastMCP
 import httpx
 from shared.config import Config
 
-mcp = FastMCP("weather-server")
+mcp = FastMCP("weather-server", host="0.0.0.0", port=8000)
 
 @mcp.tool()
 async def weather(location: str, period: str = "current", dt: str = None) -> str:

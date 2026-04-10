@@ -2,7 +2,7 @@ from mcp.server.fastmcp import FastMCP
 import httpx
 from shared.config import Config
 
-mcp = FastMCP("stock-server")
+mcp = FastMCP("stock-server", host="0.0.0.0", port=8001)
 
 @mcp.tool()
 async def stock(symbols: str, period: str = "current", start: str = None, end: str = None) -> str:
