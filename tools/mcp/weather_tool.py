@@ -6,5 +6,5 @@ def weather_tool(location: str, period: str = "current", dt: str = None):
     if dt:
         params["dt"] = dt
     return asyncio.run(
-        call_mcp("weather", params)
+        call_mcp("weather", params, server_url="http://localhost:8000/sse")
     )
