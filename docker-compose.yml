@@ -6,8 +6,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: weather-service
-    working_dir: /app/services/weather_service
-    command: uvicorn api:app --host 0.0.0.0 --port 9001
+    working_dir: /app
+    command: uvicorn services.weather_service.api:app --host 0.0.0.0 --port 9001
     ports:
       - "9001:9001"
     env_file:
@@ -24,6 +24,8 @@ services:
       - weather-service
     environment:
       - WEATHER_SERVICE_URL=http://weather-service:9001
+    ports:
+      - "8000:8000"
     env_file:
       - .env
 
@@ -32,8 +34,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: stock-service
-    working_dir: /app/services/stock_service
-    command: uvicorn api:app --host 0.0.0.0 --port 9002
+    working_dir: /app
+    command: uvicorn services.stock_service.api:app --host 0.0.0.0 --port 9002
     ports:
       - "9002:9002"
     env_file:
@@ -50,5 +52,7 @@ services:
       - stock-service
     environment:
       - STOCK_SERVICE_URL=http://stock-service:9002
+    ports:
+      - "8001:8001"
     env_file:
       - .env

@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Query
-from .service import get_weather
+from services.weather_service.service import get_weather
 
 app = FastAPI()
 
