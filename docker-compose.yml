@@ -26,3 +26,29 @@ services:
       - WEATHER_SERVICE_URL=http://weather-service:9001
     env_file:
       - .env
+
+  stock-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stock-service
+    working_dir: /app/services/stock_service
+    command: uvicorn api:app --host 0.0.0.0 --port 9002
+    ports:
+      - "9002:9002"
+    env_file:
+      - .env
+
+  stock-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-stock-server
+    working_dir: /app
+    command: python -m mcp_servers.stock_server
+    depends_on:
+      - stock-service
+    environment:
+      - STOCK_SERVICE_URL=http://stock-service:9002
+    env_file:
+      - .env

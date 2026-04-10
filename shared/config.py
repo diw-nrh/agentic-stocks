@@ -14,6 +14,9 @@ class Config:
         URL = os.getenv("WEATHER_SERVICE_URL", "http://localhost:9001")
         OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
     
+    class Stock:
+        URL = os.getenv("STOCK_SERVICE_URL", "http://localhost:9002")
+        
     @classmethod
     def validate(cls):
         if not cls.AI.NOVITA_API_KEY:

@@ -21,6 +21,11 @@ class WeatherPeriod(str, Enum):
     FORECAST = "forecast"
     HISTORICAL = "historical"
 
+class StockPeriod(str, Enum):
+    CURRENT = "current"
+    SCHEDULED = "scheduled"
+    RANGE = "range"
+
 @tool
 def weather(location: str, period: WeatherPeriod = WeatherPeriod.CURRENT, dt: str = None) -> str:
     """
@@ -39,4 +44,20 @@ def weather(location: str, period: WeatherPeriod = WeatherPeriod.CURRENT, dt: st
     except Exception as e:
         return f"Error connecting to weather service: {e}"
 
-TOOLS = [weather]
+@tool
+def stock(symbols: str, period: StockPeriod = StockPeriod.CURRENT, start: str = None, end: str = None) -> str:
+    """
+    Get stock data for given symbols (e.g. AAPL, MSFT).
+    Supports current data, scheduled (end date), or range (start and end date).
+    """
+    url = f"{Config.Stock.URL}/stocks?symbols={symbols}&period={period.value}"
+    if start: url += f"&start={start}"
+    if end: url += f"&end={end}"
+    
+    try:
+        response = requests.get(url)
+        return str(response.json())
+    except Exception as e:
+        return f"Error connecting to stock service: {e}"
+
+TOOLS = [weather, stock]
