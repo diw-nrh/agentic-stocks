@@ -1,3 +1,4 @@
+from importlib.resources import path
 import os
 from langchain_core.tools import tool
 from enum import Enum
@@ -7,13 +8,12 @@ from shared.config import Config
 
 SKILLS_DIR = "skills"
 
-def get_all_skills_prompt() -> str:
+def get_select_skills_prompt(path: str) -> str:
     all_prompts = []
-    for skill_name in os.listdir(SKILLS_DIR):
-        skill_path = os.path.join(SKILLS_DIR, skill_name, "SKILL.md")
-        if os.path.exists(skill_path):
-            description = get_skill_description(skill_path)
-            all_prompts.append(description)
+    skill_path = os.path.join(path, "SKILL.md")
+    if os.path.exists(skill_path):
+        description = get_skill_description(skill_path)
+        all_prompts.append(description)
     return "\n\n".join(all_prompts)
 
 class WeatherPeriod(str, Enum):
@@ -60,4 +60,5 @@ def stock(symbols: str, period: StockPeriod = StockPeriod.CURRENT, start: str = 
     except Exception as e:
         return f"Error connecting to stock service: {e}"
 
-TOOLS = [weather, stock]
+TOOLS_WEATHER = [weather]
+TOOLS_STOCK = [stock]
