@@ -1,28 +1,20 @@
 ---
-name: weather
-description: use this skill when you want to find the weather information of a location
+name: weather_skill
+description: Get weather data for countries and cities, including current conditions, forecasts, and historical trends.
 allowed-tools: [weather]
 ---
 
-# weather
-
-## Overview
-This skill allows the agent to find the weather information of a location.
+# Weather Skill
 
 ## Instructions
-1. Use the `weather` tool to find the weather information of a location.
-2. The `weather` tool requires the `location` parameter.
-3. The `weather` tool returns the weather information of the specified location.
-
-## Constraints
-1. The `location` parameter is required.
-2. The `weather` tool can only find the weather information of one location at a time.
-3. The `weather` tool can only find the weather information of the current date.
+1. Use this tool whenever you need to check weather information.
+2. **Location**: Provide the country name (e.g., Thailand) or city/province name (e.g., Phuket).
+3. **Period**: Specify the exact time frame you are looking for:
+   - `current`: Current weather conditions right now.
+   - `forecast`: 7-day weather forecast (use for future trends).
+   - `historical`: Historical weather data (use for past statistics). You CAN and SHOULD also specify `dt` in YYYY-MM-DD format (e.g., "2024-03-24"). By default it gives yesterday's weather.
 
 ## Examples
-- User: "What is the weather in Bangkok?" -> Call `weather(location="Bangkok")`
-- User: "Do I need to bring an umbrella to Phuket today?" -> Call `weather(location="Phuket")`
-
-## Response Guidelines
-1. If the temperature is higher than 30°C, recommend the user to drink plenty of water.
-2. If the description contains the word "rain", remind the user to bring an umbrella.
+- "What is the weather like in Thailand right now?" -> `weather(location="Thailand", period="current")`
+- "Show me the weather forecast for Chiang Mai next week." -> `weather(location="Chiang Mai", period="forecast")`
+- "What was the weather in Phuket on March 15, 2024?" -> `weather(location="Phuket", period="historical", dt="2024-03-15")`

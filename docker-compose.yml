@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  weather-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: weather-service
+    working_dir: /app/services/weather_service
+    command: uvicorn api:app --host 0.0.0.0 --port 9001
+    ports:
+      - "9001:9001"
+    env_file:
+      - .env
+
+  weather-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-weather-server
+    working_dir: /app
+    command: python -m mcp_servers.weather_server
+    depends_on:
+      - weather-service
+    environment:
+      - WEATHER_SERVICE_URL=http://weather-service:9001
+    env_file:
+      - .env

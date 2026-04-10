@@ -1,8 +1,12 @@
-from fastapi import FastAPI
-from service import get_weather
+from fastapi import FastAPI, Query
+from .service import get_weather
 
 app = FastAPI()
 
 @app.get("/weather")
-def weather(location: str):
-    return get_weather(location)
+def weather_endpoint(
+    location: str, 
+    period: str = Query("current", enum=["current", "forecast", "historical"]),
+    dt: str = Query(None, description="Date in YYYY-MM-DD format for historical data")
+):
+    return get_weather(location, period, dt)

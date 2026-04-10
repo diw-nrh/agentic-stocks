@@ -11,12 +11,15 @@ class Config:
         BASE_URL = "https://api.novita.ai/openai"
     
     class Weather:
-        URL = "http://localhost:9001"
+        URL = os.getenv("WEATHER_SERVICE_URL", "http://localhost:9001")
+        OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
     
     @classmethod
     def validate(cls):
         if not cls.AI.NOVITA_API_KEY:
             raise ValueError(" NOVITA_API_KEY in .env")
+        if not cls.Weather.OPENWEATHER_API_KEY:
+            raise ValueError(" OPENWEATHER_API_KEY in .env")
         
         print(f" Using model: {cls.AI.MODEL_NAME}")
 Config.validate()
