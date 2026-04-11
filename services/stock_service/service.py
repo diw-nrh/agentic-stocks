@@ -1,18 +1,21 @@
-from datetime import datetime, timedelta
 import yfinance as yf
 
-end = datetime.now()
-start = end - timedelta(days=1)
-def get_stocks(symbols:str,start:str,end:str,period:str):
-    stock = yf.Ticker(symbols)
-    if period == "scheduled":
-        data = stock.history(end=end)
-        data.tail(1)
-    elif period == "range":
-        data = stock.history(start=start, end=end)
-    else:
-        data = stock.history(period="1d")
-    try:   
-        return data.reset_index().to_dict(orient="records")
+
+def get_stocks(symbols: str, start: str, end: str, period: str):
+    try:
+        stock = yf.Ticker(symbols)
+
+        if period == "scheduled":
+            history_df = stock.history(end=end).tail(1)
+        elif period == "range":
+            history_df = stock.history(start=start, end=end)
+        else:
+            history_df = stock.history(period="1d")
+
+        records = history_df.reset_index().to_dict(orient="records")
+        for row in records:
+            row["symbol"] = symbols
+
+        return records
     except Exception as e:
         return {"error": str(e)}
