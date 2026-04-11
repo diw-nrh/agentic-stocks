@@ -66,7 +66,7 @@ def news(news: str, location: str = "thailand", start: str = None, end: str = No
     Get news data for given news (e.g. weather, stock).
     Supports current data, scheduled (end date), or range (start and end date).
     """
-    url = f"{Config.News.URL}/news?news={news}&location={location}&period={period.value}"
+    url = f"{Config.News.URL}/news?news={news}&location={location}&period={period}"
     if start: url += f"&start={start}"
     if end: url += f"&end={end}"
     if day: url += f"&day={day}"
@@ -77,6 +77,6 @@ def news(news: str, location: str = "thailand", start: str = None, end: str = No
     except Exception as e:
         return f"Error connecting to news service: {e}"
 
-TOOLS_WEATHER = [weather]
-TOOLS_STOCK = [stock]
-TOOLS_NEWS = [news]
+TOOLS_WEATHER = weather
+TOOLS_STOCK = stock
+TOOLS_NEWS = news

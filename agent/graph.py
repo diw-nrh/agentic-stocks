@@ -5,12 +5,12 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt
+from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt,TOOLS_NEWS
 from shared.config import Config
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_agent
 from state import main_state
-from schema import ToTGenerator, ToTEvaluator
+from schema import SinglePlan
 from langchain_core.messages import HumanMessage
 
 llm = ChatOpenAI(model=Config.AI.MODEL_NAME, 
@@ -27,107 +27,139 @@ def route_to_agents(state: main_state):
 def planner_node(state: main_state):
     user_input = state["messages"][-1].content
 
-    # 2. ออกแบบแผนมา 3 แบบ ToT
-    generator_prompt = ChatPromptTemplate.from_messages([
+    cot_planner_prompt = ChatPromptTemplate.from_messages([
         ("system",
-        "You are a Multi-Agent system planner. Design 3 lean work plans based on the task analysis.\n\n"
+         "You are an expert Multi-Agent Planner. Analyze the user's request step-by-step to create a single, efficient work plan.\n\n"
+         
+         "## AVAILABLE AGENTS & CAPABILITIES:\n"
+         "1. **weather_agent**\n"
+         "   - Focus: Meteorological data and climate events.\n"
+         "   - Capabilities: Fetches current weather conditions, forecasts, and weather-related news (e.g., storms, floods).\n"
+         "   - Constraints: Cannot analyze financial impacts or stock prices.\n"
+         "2. **stocks_agent**\n"
+         "   - Focus: Financial markets and company data.\n"
+         "   - Capabilities: Fetches real-time stock prices, historical data, and financial/business news.\n"
+         "   - Constraints: Requires explicit stock tickers for price data. Cannot fetch weather information.\n\n"
 
-        "## RULES:\n"
-        "1. Only assign tasks to agents that are actually needed for the user's request.\n"
-        "2. stocks_agent task MUST always include fetching real price data for specific tickers. "
-            "Never instruct it to do analysis only without calling stock tools.\n"
-        "3. If only weather is needed, plans should only contain 'weather_agent'.\n"
-        "4. If only stocks are needed, plans should only contain 'stocks_agent'.\n"
-        "5. Keep scope minimal — do not expand the request beyond what the user asked.\n"
-        "6. If both agents are needed, each task must be self-contained and independent.\n"
-        "   Give stocks_agent a broad instruction covering likely scenarios,\n"
-        "   so fusion can match results later. Never reference the other agent's output.\n"
-        "   Bad: 'find tickers based on the identified weather' → "
-        "   Good: 'fetch tickers for sectors commonly affected by U.S. weather conditions'\n"),
+         "## PLANNING PROCESS (Chain of Thought):\n"
+         "1. **Analyze Intent**: What is the user specifically asking for?\n"
+         "2. **Task Decomposition**: Based on the Agents' capabilities, which agent should handle which part of the request?\n"
+         "3. **Define Tasks**: Create self-contained tasks that strictly align with each agent's constraints.\n\n"
+         
+         "## RULES:\n"
+         "1. Only assign tasks to agents actually needed. If an agent's capability isn't required, ignore it.\n"
+         "2. 'stocks_agent' MUST always be instructed to fetch real price data for specific tickers when discussing stocks.\n"
+         "3. If both agents are used, instructions must be independent (No cross-referencing).\n"
+         "4. Keep the scope minimal - no extra data unless requested.\n\n"
+         
+         "Output your internal reasoning first, then the final tasks list."),
         ("user", "Task analysis: {input}")
     ])
 
-    llm_generator = generator_prompt | llm.with_structured_output(ToTGenerator)
-    tot_drafts = llm_generator.invoke({"input": user_input})
+    planner = cot_planner_prompt | llm.with_structured_output(SinglePlan)
 
-    # เลือกตัวที่ดีที่สุด
-    evaluator_prompt = ChatPromptTemplate.from_messages([
-        ("system",
-        "You are a plan evaluator. Select the plan that best covers the user's question.\n"
-        "Prefer plans that gather all information needed to answer completely and accurately.\n"
-        "Penalize plans that are missing data sources the user's question depends on.\n"
-        "Only avoid redundancy — never sacrifice coverage for brevity."),
-        ("user", "User's original request: {input}\n\nPlan options:\n{options}")
-    ])
+    plan = planner.invoke({"input": user_input})
 
-    llm_evaluator = evaluator_prompt | llm.with_structured_output(ToTEvaluator)
-    evaluation_result = llm_evaluator.invoke({
-        "input": user_input,
-        "options": tot_drafts.json()
-    })
+    # ปริ้น reasoning ออกมาดูเพื่อตรวจสอบความฉลาดของ Planner
+    print(f"=== Planner Reasoning ===\n{plan.reasoning}")
 
-    best_plan = next(opt for opt in tot_drafts.options if opt.option_id == evaluation_result.best_option_id)
-
-    return {"agent_tasks": best_plan.tasks}
+    return {"agent_tasks": plan.tasks}
 
 # Specific agent nodes
 def weather_agent_node(state: main_state):
-    skill_prompt = get_select_skills_prompt("skills/weather")
-    messages = [{"role": "system", "content": skill_prompt}]
     weather_task = state.get("agent_tasks", {}).get("weather_agent", "")
-    if isinstance(weather_task, str) and weather_task.strip():
-        messages.append({"role": "user", "content": weather_task})
-    elif isinstance(weather_task, list):
-        messages.extend(weather_task)
-    llm_weather = create_agent(model=llm, tools=TOOLS_WEATHER)
-    result = llm_weather.invoke({
-        "messages": messages})
+
+    # ดึง Skill Prompt มาแยกกัน เพื่อจัด Format ให้เป็นระเบียบ
+    skill_prompt_weather = get_select_skills_prompt("skills/weather")
+    skill_prompt_news = get_select_skills_prompt("skills/news")
+    
+    system = (
+        f"## WEATHER TOOL DOCUMENTATION:\n{skill_prompt_weather}\n\n"
+        f"## NEWS TOOL DOCUMENTATION:\n{skill_prompt_news}\n\n"
+        "You are a specialized Weather & Climate Data Agent. Your goal is to gather accurate weather data and relevant news.\n\n"
+        "## WORKFLOW & RULES:\n"
+        "1. **Weather News (Context)**:\n"
+        "   - If the task asks for weather events, disasters (e.g., hurricanes, floods), or climate news, use the `news` tool.\n"
+        "   - ALWAYS set `news='weather'`.\n"
+        "   - Example: `news(news='weather', location='america', period='current')`\n"
+        "2. **Meteorological Data (Conditions/Forecasts)**:\n"
+        "   - To fetch exact temperatures, current conditions, or specific forecasts, use the `weather` tool.\n"
+        "3. **Execution**:\n"
+        "   - You can use both tools if the task requires both context (news) and specific data (weather).\n"
+        "   - Summarize your findings clearly."
+    )
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": str(weather_task)}
+    ]
+    
+    # ใส่ Tools ให้ครบทั้ง 2 ตัว
+    llm_weather = create_agent(model=llm, tools=[TOOLS_WEATHER, TOOLS_NEWS])
+    result = llm_weather.invoke({"messages": messages})
     return {"agent_results": {"weather": result}}
 
 def stocks_agent_node(state: main_state):
     stocks_task = state.get("agent_tasks", {}).get("stocks_agent", "")
 
-    # --- Pre-processor: สรุปว่าควรดูหุ้นตัวไหน ---
-    ticker_prompt = ChatPromptTemplate.from_messages([
-        ("system",
-        "You are a financial analyst. Given a task, list the specific stock tickers that should be fetched and investigated.\n"
-        "Always return actual ticker symbols (e.g. HD, KMI, NEE). Be concise and direct. Write in plain text."),
-        ("user", "Task: {task}")
-    ])
+    skill_prompt_stock = get_select_skills_prompt("skills/stock")
+    skill_prompt_news = get_select_skills_prompt("skills/news")
     
-    ticker_summary = (ticker_prompt | llm).invoke({"task": stocks_task})
-    enriched_task = f"{stocks_task}\n\nStock focus: {ticker_summary.content}"
-    
-    print("=== enriched_task ===")  # ← เพิ่มตรงนี้
-    print(enriched_task)
-    # --- Stocks Agent ---
-    skill_prompt = get_select_skills_prompt("skills/stock")
     system = (
-        "stock agent skill tool: " + skill_prompt +
-        "\nComplete the task autonomously. Never ask the user for input."
-        "\nWhen fetching stock data, you MUST call the stock tool ONE ticker at a time. "
-        "Never pass multiple tickers in a single call. "
-        "Example: call stock('HD'), then stock('LOW'), then stock('NEE') separately."
-        "\nWhen returning results, always include the ticker symbol with each data point. "
-        "Format: TICKER: <price info>."
+        f"## STOCK TOOL DOCUMENTATION:\n{skill_prompt_stock}\n\n"
+        f"## NEWS TOOL DOCUMENTATION:\n{skill_prompt_news}\n\n"
+        "You are a specialized Financial Data & News Agent. Your goal is to gather comprehensive information to complete the task.\n\n"
+        "## WORKFLOW & RULES:\n"
+        "1. **Gather Context (News First)**:\n"
+        "   - If the task requires understanding market sentiment or events, use the `news` tool first.\n"
+        "   - ALWAYS set `news='stock'` when looking for financial news.\n"
+        "   - Example: `news(news='stock', location='america', period='current')`\n"
+        "2. **Fetch Data (Stock Prices)**:\n"
+        "   - After understanding the context (or if only prices are needed), identify relevant stock tickers.\n"
+        "   - Call the `stock` tool for EACH ticker one by one (Never pass multiple symbols in one call).\n"
+        "   - Example: `stock(symbols='AAPL', period='current')` then `stock(symbols='MSFT', period='current')`\n"
+        "3. **Synthesize & Output**:\n"
+        "   - Combine the insights from the news and the real-time stock prices.\n"
+        "   - Format your output clearly. Always include TICKER: <data> when discussing specific stocks."
     )
 
     messages = [
         {"role": "system", "content": system},
-        {"role": "user", "content": enriched_task}
-]
-    llm_stocks = create_agent(model=llm, tools=TOOLS_STOCK)
+        {"role": "user", "content": stocks_task}
+    ]
+    llm_stocks = create_agent(model=llm, tools=[TOOLS_STOCK, TOOLS_NEWS])
     result = llm_stocks.invoke({"messages": messages})
     return {"agent_results": {"stocks": result}}
 
 # Fusion and presentation nodes
 def fusion_node(state: main_state):
     user_question = state["messages"][-1].content
-    prompt = (
-        f"You are an expert analyst. Answer the user's question using the data below.\n\n"
-        f"Question: {user_question}\n\n"
-        f"Data: {state['agent_results']}"
-    )
+    raw_data = state.get('agent_results', {})
+
+    prompt = f"""You are an expert financial and data analyst. 
+        Your MOST IMPORTANT rule: Answer the user's question IMMEDIATELY in the very first sentence, then provide the supporting details.
+
+        ## USER QUESTION:
+        "{user_question}"
+
+        ## RAW DATA:
+        {raw_data}
+
+        ## STRICT OUTPUT FORMAT:
+        **1. Direct Answer:**
+        - Start immediately with the final conclusion or recommendation answering the user's question. 
+        - Do NOT use filler intros like "Based on the data..." or "Here is the analysis...".
+        - Example: "You should monitor utility stocks like EXC and agricultural stocks like ADM due to the extreme cold fronts in the Midwest."
+
+        **2. Explanation (The 'Why'):**
+        - Provide 2-3 concise bullet points explaining the logical connection between the weather events and the stock sectors.
+
+        **3. Data Snapshot:**
+        - List the fetched tickers with their current price and a 5-word micro-summary.
+        - Example: "EXC ($48.57): Cold weather increases heating demand."
+
+        **Constraints:** Keep the entire response under 150-200 words. Be direct, professional, and analytical.
+        """
     
     results = llm.invoke(prompt)
     return {"fusion_results": results}
