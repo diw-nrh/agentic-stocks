@@ -20,3 +20,6 @@ allowed-tools: [stock]
 - "What is the stock range data for AAPL between March 20 and March 24?" -> `stock(symbols="AAPL", start="2024-03-20", end="2024-03-24", period="range")`
 - "What is the scheduled stock data for AAPL up to March 24?" -> `stock(symbols="AAPL", end="2024-03-24", period="scheduled")`
 - "What is the current stock data for AAPL?" -> `stock(symbols="AAPL", period="current")`
+
+## rules
+- Symbols can only be accessed one at a time; they cannot be accessed simultaneously.
