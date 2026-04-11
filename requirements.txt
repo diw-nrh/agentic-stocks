@@ -12,4 +12,6 @@ langchain_openai
 mcp
 fastmcp
 
-yfinance 
+yfinance
+
+feedparser==6.0.10

@@ -60,5 +60,23 @@ def stock(symbols: str, period: StockPeriod = StockPeriod.CURRENT, start: str = 
     except Exception as e:
         return f"Error connecting to stock service: {e}"
 
+@tool
+def news(news: str, location: str = "thailand", start: str = None, end: str = None, period: str = "current", day: str = "30") -> str:
+    """
+    Get news data for given news (e.g. weather, stock).
+    Supports current data, scheduled (end date), or range (start and end date).
+    """
+    url = f"{Config.News.URL}/news?news={news}&location={location}&period={period.value}"
+    if start: url += f"&start={start}"
+    if end: url += f"&end={end}"
+    if day: url += f"&day={day}"
+    
+    try:
+        response = requests.get(url)
+        return str(response.json())
+    except Exception as e:
+        return f"Error connecting to news service: {e}"
+
 TOOLS_WEATHER = [weather]
 TOOLS_STOCK = [stock]
+TOOLS_NEWS = [news]

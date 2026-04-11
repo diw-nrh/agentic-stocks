@@ -16,6 +16,9 @@ class Config:
     
     class Stock:
         URL = os.getenv("STOCK_SERVICE_URL", "http://localhost:9002")
+    
+    class News: 
+        URL = os.getenv("NEWS_SERVICE_URL", "http://localhost:9003")
         
     @classmethod
     def validate(cls):
