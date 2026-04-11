@@ -25,9 +25,7 @@ def get_news(news:str, location:str, start:str, end:str, period:str, day:str):
         else:
             return [{
                 "title": entry.title,
-                "link": entry.link,
                 "published": published.isoformat(),
-                "summary": getattr(entry, "summary", "")
             }]
 
     return results
