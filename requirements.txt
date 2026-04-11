@@ -15,3 +15,6 @@ fastmcp
 yfinance
 
 feedparser==6.0.10
+pygooglenews --no-deps
+
+requests
