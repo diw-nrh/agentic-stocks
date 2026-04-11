@@ -1,6 +1,7 @@
 import requests
 import sys
 import os
+from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from shared.config import Config
@@ -12,7 +13,7 @@ def get_weather(location: str, period: str = "current", dt: str = None) -> dict:
     if period == "forecast":
         url = f"{base_url}/forecast.json?key={api_key}&q={location}&days=7&lang=th"
     elif period == "historical":
-        historical_dt = dt or "2024-03-24"
+        historical_dt = dt or datetime.now().strftime("%Y-%m-%d")
         url = f"{base_url}/history.json?key={api_key}&q={location}&dt={historical_dt}&lang=th"
     else:
         url = f"{base_url}/current.json?key={api_key}&q={location}&lang=th"
