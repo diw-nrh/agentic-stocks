@@ -2,9 +2,11 @@ from importlib.resources import path
 import os
 from langchain_core.tools import tool
 from enum import Enum
-import requests
 from shared.utils import get_skill_description
 from shared.config import Config
+from tools.mcp.weather_tool import weather_tool as mcp_weather
+from tools.mcp.stock_tool import stock_tool as mcp_stock
+from tools.mcp.news_tool import news_tool as mcp_news
 
 SKILLS_DIR = "skills"
 
@@ -26,6 +28,11 @@ class StockPeriod(str, Enum):
     SCHEDULED = "scheduled"
     RANGE = "range"
 
+class NewsPeriod(str, Enum):
+    CURRENT = "current"
+    SCHEDULED = "scheduled"
+    RANGE = "range"
+
 @tool
 def weather(location: str, period: WeatherPeriod = WeatherPeriod.CURRENT, dt: str = None) -> str:
     """
@@ -34,15 +41,11 @@ def weather(location: str, period: WeatherPeriod = WeatherPeriod.CURRENT, dt: st
     If period is 'historical', you can optionally specify 'dt' in YYYY-MM-DD format.
     """
 
-    url = f"{Config.Weather.URL}/weather?location={location}&period={period.value}"
-    if dt:
-        url += f"&dt={dt}"
-    
     try:
-        response = requests.get(url)
-        return str(response.json())
+        result = mcp_weather(location=location, period=period.value, dt=dt)
+        return str(result)
     except Exception as e:
-        return f"Error connecting to weather service: {e}"
+        return f"Error connecting to weather MCP: {e}"
 
 @tool
 def stock(symbols: str, period: StockPeriod = StockPeriod.CURRENT, start: str = None, end: str = None) -> str:
@@ -50,32 +53,23 @@ def stock(symbols: str, period: StockPeriod = StockPeriod.CURRENT, start: str = 
     Get stock data for given symbols (e.g. AAPL, MSFT).
     Supports current data, scheduled (end date), or range (start and end date).
     """
-    url = f"{Config.Stock.URL}/stocks?symbols={symbols}&period={period.value}"
-    if start: url += f"&start={start}"
-    if end: url += f"&end={end}"
-    
     try:
-        response = requests.get(url)
-        return str(response.json())
+        result = mcp_stock(symbols=symbols, period=period.value, start=start, end=end)
+        return str(result)
     except Exception as e:
-        return f"Error connecting to stock service: {e}"
+        return f"Error connecting to stock MCP: {e}"
 
 @tool
-def news(news: str, location: str = "thailand", start: str = None, end: str = None, period: str = "current", day: str = "30") -> str:
+def news(news: str, location: str = "thailand", start: str = None, end: str = None, period: NewsPeriod = NewsPeriod.CURRENT, day: str = "30") -> str:
     """
     Get news data for given news (e.g. weather, stock).
     Supports current data, scheduled (end date), or range (start and end date).
     """
-    url = f"{Config.News.URL}/news?news={news}&location={location}&period={period}"
-    if start: url += f"&start={start}"
-    if end: url += f"&end={end}"
-    if day: url += f"&day={day}"
-    
     try:
-        response = requests.get(url)
-        return str(response.json())
+        result = mcp_news(news=news, location=location, start=start, end=end, period=period.value, day=day)
+        return str(result)
     except Exception as e:
-        return f"Error connecting to news service: {e}"
+        return f"Error connecting to news MCP: {e}"
 
 TOOLS_WEATHER = weather
 TOOLS_STOCK = stock
