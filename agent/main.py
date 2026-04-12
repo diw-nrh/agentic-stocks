@@ -61,8 +61,6 @@ def format_update(node_name, state):
     if "fusion_results" in state:
         return extract_content(state["fusion_results"])
 
-    if "results" in state:
-        return extract_content(state["results"])
 
     return {k: extract_content(v) for k, v in state.items()}
 
