@@ -164,15 +164,12 @@ def fusion_node(state: main_state):
     results = llm.invoke(prompt)
     return {"fusion_results": results}
 
-def presentation_node(state: main_state):
-    return {"results": state['fusion_results']}
 
 workflow = StateGraph(main_state)
 workflow.add_node("planner", planner_node)
 workflow.add_node("weather_agent", weather_agent_node)
 workflow.add_node("stocks_agent", stocks_agent_node)
 workflow.add_node("fusion", fusion_node)
-workflow.add_node("presentation", presentation_node)
 
 workflow.set_entry_point("planner")
 workflow.add_conditional_edges(
@@ -186,6 +183,5 @@ workflow.add_conditional_edges(
 )
 workflow.add_edge("weather_agent", "fusion")
 workflow.add_edge("stocks_agent", "fusion")
-workflow.add_edge("fusion", "presentation")
-workflow.add_edge("presentation", END)
+workflow.add_edge("fusion", END)
 app = workflow.compile()
