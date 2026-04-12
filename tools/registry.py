@@ -26,6 +26,11 @@ class StockPeriod(str, Enum):
     SCHEDULED = "scheduled"
     RANGE = "range"
 
+class NewsPeriod(str, Enum):
+    CURRENT = "current"
+    SCHEDULED = "scheduled"
+    RANGE = "range"
+
 @tool
 def weather(location: str, period: WeatherPeriod = WeatherPeriod.CURRENT, dt: str = None) -> str:
     """
@@ -61,12 +66,12 @@ def stock(symbols: str, period: StockPeriod = StockPeriod.CURRENT, start: str = 
         return f"Error connecting to stock service: {e}"
 
 @tool
-def news(news: str, location: str = "thailand", start: str = None, end: str = None, period: str = "current", day: str = "30") -> str:
+def news(news: str, location: str = "thailand", start: str = None, end: str = None, period: NewsPeriod = NewsPeriod.CURRENT, day: str = "30") -> str:
     """
     Get news data for given news (e.g. weather, stock).
     Supports current data, scheduled (end date), or range (start and end date).
     """
-    url = f"{Config.News.URL}/news?news={news}&location={location}&period={period}"
+    url = f"{Config.News.URL}/news?news={news}&location={location}&period={period.value}"
     if start: url += f"&start={start}"
     if end: url += f"&end={end}"
     if day: url += f"&day={day}"
