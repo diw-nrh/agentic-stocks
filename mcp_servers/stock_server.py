@@ -20,7 +20,7 @@ async def stock(symbols: str, period: str = "current", start: str = None, end: s
     if isinstance(data, dict) and "error" in data:
         return f"Error fetching {symbols}: {data['error']}"
 
-    return str({"ticker": symbols, "data": data})
+    return str({"symbol": symbols, "data": data})
 
 if __name__ == "__main__":
     mcp.run(transport="sse")
