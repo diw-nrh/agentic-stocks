@@ -85,7 +85,7 @@ services:
     container_name: hermes_postgres
     restart: always
     environment:
-      POSTGRES_USER: hermes
+      POSTGRES_USER: hermes # ฝาก เขียนให้ง่ายด้วย
       POSTGRES_PASSWORD: hermes_pass
       POSTGRES_DB: hermes_db
     ports:
@@ -93,7 +93,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hermes -d hermes_db"]
+      test: [ "CMD-SHELL", "pg_isready -U hermes -d hermes_db" ]
       interval: 5s
       retries: 5
 
