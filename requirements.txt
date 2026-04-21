@@ -17,3 +17,8 @@ yfinance
 feedparser==6.0.10
 
 requests
+
+# memory service
+sqlmodel
+psycopg2-binary
+pgvector

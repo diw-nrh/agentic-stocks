@@ -79,3 +79,49 @@ services:
       - "8003:8003"
     env_file:
       - .env
+
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: hermes_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: hermes
+      POSTGRES_PASSWORD: hermes_pass
+      POSTGRES_DB: hermes_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hermes -d hermes_db"]
+      interval: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: hermes_pgadmin
+    restart: always
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+
+  memory-service:
+    image: agentic-stocks-local:latest
+    container_name: memory-service
+    working_dir: /app
+    command: uvicorn memory.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "9004:8000"
+    environment:
+      DATABASE_URL: postgresql://hermes:hermes_pass@postgres:5432/hermes_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+      weather-service:
+        condition: service_started
+    restart: always
+
+volumes:
+  pgdata:

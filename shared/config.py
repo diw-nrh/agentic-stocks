@@ -19,6 +19,10 @@ class Config:
     
     class News: 
         URL = os.getenv("NEWS_SERVICE_URL", "http://localhost:9003")
+
+    class Memory:
+        URL = os.getenv("MEMORY_SERVICE_URL", "http://localhost:9004")
+        DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://hermes:hermes_pass@localhost:5432/hermes_db")
         
     @classmethod
     def validate(cls):
