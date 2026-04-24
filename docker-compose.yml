@@ -82,28 +82,28 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg15
-    container_name: hermes_postgres
+    container_name: agentic_postgres
     restart: always
     environment:
-      POSTGRES_USER: hermes # ฝาก เขียนให้ง่ายด้วย
-      POSTGRES_PASSWORD: hermes_pass
-      POSTGRES_DB: hermes_db
+      POSTGRES_USER: agentic121 # ฝาก เขียนให้ง่ายด้วย
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: agentic_db
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U hermes -d hermes_db" ]
+      test: [ "CMD-SHELL", "pg_isready -U agentic121 -d agentic_db" ]
       interval: 5s
       retries: 5
 
   pgadmin:
     image: dpage/pgadmin4
-    container_name: hermes_pgadmin
+    container_name: agentic_pgadmin
     restart: always
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@admin.com
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: agentic@admin.com
+      PGADMIN_DEFAULT_PASSWORD: 1234
     ports:
       - "5050:80"
 
@@ -115,7 +115,7 @@ services:
     ports:
       - "9004:8000"
     environment:
-      DATABASE_URL: postgresql://hermes:hermes_pass@postgres:5432/hermes_db
+      DATABASE_URL: postgresql://agentic121:1234@postgres:5432/agentic_db
     depends_on:
       postgres:
         condition: service_healthy
