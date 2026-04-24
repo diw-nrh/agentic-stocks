@@ -5,7 +5,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt,TOOLS_NEWS
+from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt,TOOLS_NEWS, TOOLS_MANAGE
 from shared.config import Config
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_agent
@@ -39,7 +39,11 @@ def planner_node(state: main_state):
          "2. **stocks_agent**\n"
          "   - Focus: Financial markets and company data.\n"
          "   - Capabilities: Fetches real-time stock prices, historical data, and financial/business news.\n"
-         "   - Constraints: Requires explicit stock tickers for price data. Cannot fetch weather information.\n\n"
+         "   - Constraints: Requires explicit stock tickers for price data. Cannot fetch weather information.\n"
+         "3. **skill_maker_agent**\n"
+         "   - Focus: Creating and updating tools/skills in the database.\n"
+         "   - Capabilities: Writes Python code and JSON schemas to build new tools for the system.\n"
+         "   - Constraints: Use ONLY when a requested feature or tool does not exist in current capabilities.\n\n"
 
          "## PLANNING PROCESS (Chain of Thought):\n"
          "1. **Analyze Intent**: What is the user specifically asking for?\n"
@@ -131,6 +135,25 @@ def stocks_agent_node(state: main_state):
     result = llm_stocks.invoke({"messages": messages})
     return {"agent_results": {"stocks": result}}
 
+def skill_maker_agent_node(state: main_state):
+    skill_task = state.get("agent_tasks", {}).get("skill_maker_agent", "")
+    system = (
+        "You are a specialized Tool-Making Agent. Your goal is to write python code and schemas to create new tools.\n\n"
+        "## WORKFLOW:\n"
+        "1. Understand the missing capability.\n"
+        "2. Write a Python `@tool` function as the `source_code`.\n"
+        "3. Provide a clear `description`.\n"
+        "4. Provide the arguments as a valid JSON string for `tool_schema_json`.\n"
+        "5. Call the `manage_skill` tool to save it into the memory database.\n"
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": skill_task}
+    ]
+    llm_skill_maker = create_agent(model=llm, tools=[TOOLS_MANAGE])
+    result = llm_skill_maker.invoke({"messages": messages})
+    return {"agent_results": {"skill_maker": result}}
+
 # Fusion and presentation nodes
 def fusion_node(state: main_state):
     user_question = state["messages"][-1].content
@@ -169,6 +192,7 @@ workflow = StateGraph(main_state)
 workflow.add_node("planner", planner_node)
 workflow.add_node("weather_agent", weather_agent_node)
 workflow.add_node("stocks_agent", stocks_agent_node)
+workflow.add_node("skill_maker_agent", skill_maker_agent_node)
 workflow.add_node("fusion", fusion_node)
 
 workflow.set_entry_point("planner")
@@ -178,10 +202,12 @@ workflow.add_conditional_edges(
     {
         "weather_agent": "weather_agent",
         "stocks_agent": "stocks_agent",
+        "skill_maker_agent": "skill_maker_agent",
         "fusion": "fusion"
     }
 )
 workflow.add_edge("weather_agent", "fusion")
 workflow.add_edge("stocks_agent", "fusion")
+workflow.add_edge("skill_maker_agent", "fusion")
 workflow.add_edge("fusion", END)
 app = workflow.compile()
