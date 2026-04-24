@@ -5,7 +5,8 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt,TOOLS_NEWS, TOOLS_MANAGE
+from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt, TOOLS_NEWS
+from skills.registry import TOOLS_MANAGE
 from shared.config import Config
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_agent
