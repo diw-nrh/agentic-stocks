@@ -32,7 +32,7 @@ TOOL_REGISTRY = {
 #     import requests
 #     from langchain_core.tools import tool as _tool_dec
 #     try:
-#         resp = requests.get("http://memory-service:8000/skills/all", timeout=5)
+#         resp = requests.get("http://localhost:9004/skills/all", timeout=5)
 #         resp.raise_for_status()
 #         skills = resp.json().get("results", [])
 #         for skill in skills:
