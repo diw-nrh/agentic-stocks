@@ -65,6 +65,11 @@ def search_skills(session: Session, query: str, limit: int = 3):
         
     return results
 
+def get_all_skills(session: Session):
+    stmt = select(Skill)
+    results = session.exec(stmt).all()
+    return results
+
 def save_skill(session: Session, skill_data: dict):
     embedding_vector = get_embedding(skill_data.get("description", ""))
     

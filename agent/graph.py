@@ -2,7 +2,7 @@
 import sys
 import os
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.types import interrupt
 from langchain_openai import ChatOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt, TOOLS_NEWS
@@ -11,88 +11,335 @@ from shared.config import Config
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_agent
 from state import main_state
-from schema import SinglePlan
-from langchain_core.messages import HumanMessage
+from schema import DualPlan, InputValidation
+from langchain_core.messages import HumanMessage, AIMessage
+from langgraph.checkpoint.memory import MemorySaver
 
 llm = ChatOpenAI(model=Config.AI.MODEL_NAME, 
                    api_key=Config.AI.NOVITA_API_KEY, 
                    base_url=Config.AI.BASE_URL)
 
-def route_to_agents(state: main_state):
-    tasks = state.get("agent_tasks", {})
-    if not tasks:
-        return "fusion_node"
-    return list(tasks.keys())
+# Maps tool name (as declared in AgentSpec) → actual tool object
+TOOL_REGISTRY = {
+    "weather":      TOOLS_WEATHER,
+    "news":         TOOLS_NEWS,
+    "stock":        TOOLS_STOCK,
+    "manage_skill": TOOLS_MANAGE,
+}
+
+# def _load_skills_from_db():
+#     """โหลด skills ทั้งหมดจาก memory-service DB เข้า TOOL_REGISTRY ตอน startup"""
+#     import requests
+#     from langchain_core.tools import tool as _tool_dec
+#     try:
+#         resp = requests.get("http://localhost:9004/skills/all", timeout=5)
+#         resp.raise_for_status()
+#         skills = resp.json().get("results", [])
+#         for skill in skills:
+#             name = skill.get("name", "")
+#             source_code = skill.get("source_code", "")
+#             if not name or not source_code:
+#                 continue
+#             try:
+#                 _ns = {"tool": _tool_dec, "__builtins__": __builtins__}
+#                 exec(source_code, _ns)  # noqa: S102
+#                 for _val in _ns.values():
+#                     if (
+#                         hasattr(_val, "name")
+#                         and hasattr(_val, "invoke")
+#                         and _val is not _tool_dec
+#                     ):
+#                         TOOL_REGISTRY[name] = _val
+#                         print(f"[Startup] Loaded skill '{name}' from DB into TOOL_REGISTRY")
+#                         break
+#             except Exception as e:
+#                 print(f"[Startup] Failed to load skill '{name}': {e}")
+#         print(f"[Startup] TOOL_REGISTRY has {len(TOOL_REGISTRY)} tools: {list(TOOL_REGISTRY.keys())}")
+#     except Exception as e:
+#         print(f"[Startup] Could not reach memory-service: {e}")
+
+# _load_skills_from_db()
+
+# Maps tool name → skills doc directory (for building agent system prompts)
+SKILL_DOC_MAP = {
+    "weather": "skills/weather",
+    "news":    "skills/news",
+    "stock":   "skills/stock",
+}
+
+def input_validator_node(state: main_state):
+    messages = state["messages"]
+
+    validator_prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         "You are an Input Validation Agent. Think step by step before deciding.\n\n"
+         "## CHAIN OF THOUGHT — follow these steps in order:\n"
+         "STEP 1: What is the user ultimately trying to accomplish?\n"
+         "STEP 2: Is there a HARD BLOCKER — a piece of data so fundamental that no agent could even START without it?\n"
+         "         A hard blocker is something that cannot be inferred, researched, or decided by a downstream agent.\n"
+         "STEP 3: If YES hard blocker → ask ONE short question for ONLY that missing data. Set is_sufficient=False.\n"
+         "         If NO hard blocker → set is_sufficient=True. Trust the planner and agents to handle everything else.\n\n"
+         "## WHAT COUNTS AS A HARD BLOCKER (ask these):\n"
+         "- BMI calculation with NO height and NO weight provided (math is impossible without numbers).\n"
+         "- Weather request with NO location at all — not even a country or region.\n"
+         "- Currency conversion with NO amount specified.\n\n"
+         "## WHAT IS NOT A HARD BLOCKER (do NOT ask these):\n"
+         "- Which sector/industry to focus on → planner will decide the strategy.\n"
+         "- Which specific stocks to analyze → agents can research and pick.\n"
+         "- Risk tolerance or investment style → agents can give a general answer.\n"
+         "- How to define 'best' or 'worth buying' → agents handle open-ended analysis.\n"
+         "- Any detail the agent could look up, infer, or decide independently.\n\n"
+         "## EXAMPLES:\n"
+         "- 'What stocks fit the weather in Thailand?' → NO hard blocker. is_sufficient=True.\n"
+         "- 'What should I invest in?' → NO hard blocker. is_sufficient=True.\n"
+         "- 'Compare tech stocks' → NO hard blocker. is_sufficient=True.\n"
+         "- 'What is the weather?' → HARD BLOCKER (no location). Ask for location.\n"
+         "- 'Calculate my BMI' → HARD BLOCKER (no height/weight). Ask for them.\n\n"
+         "When in doubt, default to is_sufficient=True."),
+        ("user", "Conversation so far:\n{conversation}")
+    ])
+
+    validator = validator_prompt | llm.with_structured_output(InputValidation)
+
+    conversation = "\n".join([
+        f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
+        for m in messages
+    ])
+
+    validation = validator.invoke({"conversation": conversation})
+    print(f"=== Input Validator ===\nSufficient: {validation.is_sufficient}\nReason: {validation.reasoning}")
+
+    if not validation.is_sufficient:
+        user_response = interrupt({"question": validation.clarification_question})
+
+        return {
+            "messages": [
+                AIMessage(content=validation.clarification_question),
+                HumanMessage(content=str(user_response))
+            ],
+            "gathered_info": [
+                {"role": "assistant", "content": validation.clarification_question},
+                {"role": "user", "content": str(user_response)}
+            ],
+            "input_validated": False,
+        }
+
+    return {"input_validated": True}
+
+
+def route_after_validation(state: main_state):
+    if state.get("input_validated", False):
+        return "planner"
+    return "input_validator"
+
 
 # Planner node
 def planner_node(state: main_state):
-    user_input = state["messages"][-1].content
+    full_conversation = "\n".join([
+        f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
+        for m in state["messages"]
+    ])
+
+    tool_list_lines = []
+    for tool_name, tool_obj in TOOL_REGISTRY.items():
+        description = getattr(tool_obj, "description", "") or ""
+        first_line = description.strip().splitlines()[0] if description.strip() else "(no description)"
+        tool_list_lines.append(f"- {tool_name:<15}: {first_line}")
+    tool_list_str = "\n".join(tool_list_lines)
 
     cot_planner_prompt = ChatPromptTemplate.from_messages([
         ("system",
-         "You are an expert Multi-Agent Planner. Analyze the user's request step-by-step to create a single, efficient work plan.\n\n"
-         
-         "## AVAILABLE AGENTS & CAPABILITIES:\n"
-         "1. **weather_agent**\n"
-         "   - Focus: Meteorological data and climate events.\n"
-         "   - Capabilities: Fetches current weather conditions, forecasts, and weather-related news (e.g., storms, floods).\n"
-         "   - Constraints: Cannot analyze financial impacts or stock prices.\n"
-         "2. **stocks_agent**\n"
-         "   - Focus: Financial markets and company data.\n"
-         "   - Capabilities: Fetches real-time stock prices, historical data, and financial/business news.\n"
-         "   - Constraints: Requires explicit stock tickers for price data. Cannot fetch weather information.\n"
-         "3. **skill_maker_agent**\n"
-         "   - Focus: Creating and updating tools/skills in the database.\n"
-         "   - Capabilities: Writes Python code and JSON schemas to build new tools for the system.\n"
-         "   - Constraints: Use ONLY when a requested feature or tool does not exist in current capabilities.\n\n"
+         "You are an expert Meta-Agent Planner. Output a PLAN and AGENT SPECS for every request.\n\n"
 
-         "## PLANNING PROCESS (Chain of Thought):\n"
-         "1. **Analyze Intent**: What is the user specifically asking for?\n"
-         "2. **Task Decomposition**: Based on the Agents' capabilities, which agent should handle which part of the request?\n"
-         "3. **Define Tasks**: Create self-contained tasks that strictly align with each agent's constraints.\n\n"
-         
+         f"## AVAILABLE TOOLS:\n{tool_list_str}\n\n"
+
          "## RULES:\n"
-         "1. Only assign tasks to agents actually needed. If an agent's capability isn't required, ignore it.\n"
-         "2. 'stocks_agent' MUST always be instructed to fetch real price data for specific tickers when discussing stocks.\n"
-         "3. If both agents are used, instructions must be independent (No cross-referencing).\n"
-         "4. Keep the scope minimal - no extra data unless requested.\n\n"
-         
-         "Output your internal reasoning first, then the final tasks list."),
-        ("user", "Task analysis: {input}")
+         "1. Each plan step → exactly ONE agent. agent_name must match exactly in agent_specs.\n"
+         "2. tools_required must only contain tool names from AVAILABLE TOOLS above.\n"
+         "3. tools_required CAN be empty [] for pure analysis/reasoning agents that need no external data.\n"
+         "4. Agents in later steps AUTOMATICALLY receive results from all previous steps as context.\n"
+         "   So a later step does NOT need to re-fetch data already retrieved in an earlier step.\n"
+         "5. ALWAYS split multi-part requests into multiple steps. Never collapse into 1 step if multiple things are needed.\n"
+         "6. For analysis that combines data sources: fetch in early steps, reason/analyze in later steps.\n"
+         "7. For ANY calculation or formula-based task (BMI, compound interest, unit conversion, etc.):\n"
+         "   ALWAYS create a reusable tool first with manage_skill, then use it in the next step.\n\n"
+
+         "## EXAMPLE — 'Weather in Thailand + stocks worth buying based on weather':\n"
+         "  Step 1: WeatherAgent   tools=[weather]  — fetch current weather in Thailand\n"
+         "  Step 2: AnalystAgent   tools=[stock]    — use weather context from step 1 to find & evaluate relevant stocks\n\n"
+
+         "## EXAMPLE — 'Compare AAPL and MSFT':\n"
+         "  Step 1: StockFetcher  tools=[stock]  — fetch AAPL and MSFT data\n"
+         "  Step 2: Analyst       tools=[]       — compare and summarize\n\n"
+
+         "## EXAMPLE — 'Calculate BMI / any formula-based task':\n"
+         "  Step 1: SkillMaker    tools=[manage_skill]  — create a Python @tool for the calculation\n"
+         "  Step 2: Calculator    tools=[<tool_name>]   — call the created tool with the user's values\n\n"
+
+         "Output reasoning (2-3 sentences), then the structured DualPlan."),
+        ("user", "Full conversation:\n{input}")
     ])
 
-    planner = cot_planner_prompt | llm.with_structured_output(SinglePlan)
+    planner = cot_planner_prompt | llm.with_structured_output(DualPlan)
+    plan = planner.invoke({"input": full_conversation})
 
-    plan = planner.invoke({"input": user_input})
-
-    # ปริ้น reasoning ออกมาดูเพื่อตรวจสอบความฉลาดของ Planner
     print(f"=== Planner Reasoning ===\n{plan.reasoning}")
+    print(f"=== Plan Steps ===\n{[s.model_dump() for s in plan.plan_steps]}")
+    print(f"=== Agent Specs ===\n{[a.model_dump() for a in plan.agent_specs]}")
 
-    return {"agent_tasks": plan.tasks}
+    return {
+        "plan_steps": [s.model_dump() for s in plan.plan_steps],
+        "agent_specs": [a.model_dump() for a in plan.agent_specs],
+        "plan_ready": False,
+        "agents_ready": False,
+        "replan_count": state.get("replan_count", 0) + 1,
+    }
 
-# Specific agent nodes
-def weather_agent_node(state: main_state):
-    weather_task = state.get("agent_tasks", {}).get("weather_agent", "")
+# ── Observer nodes ──────────────────────────────────────────────────────────
 
-    # ดึง Skill Prompt มาแยกกัน เพื่อจัด Format ให้เป็นระเบียบ
-    skill_prompt_weather = get_select_skills_prompt("skills/weather")
-    skill_prompt_news = get_select_skills_prompt("skills/news")
-    
-    system = (
-        f"## WEATHER TOOL DOCUMENTATION:\n{skill_prompt_weather}\n\n"
-        f"## NEWS TOOL DOCUMENTATION:\n{skill_prompt_news}\n\n"
-        "You are a specialized Weather & Climate Data Agent. Your goal is to gather accurate weather data and relevant news.\n\n"
-        "## WORKFLOW & RULES:\n"
-        "1. **Weather News (Context)**:\n"
-        "   - If the task asks for weather events, disasters (e.g., hurricanes, floods), or climate news, use the `news` tool.\n"
-        "   - ALWAYS set `news='weather'`.\n"
-        "   - Example: `news(news='weather', location='america', period='current')`\n"
-        "2. **Meteorological Data (Conditions/Forecasts)**:\n"
-        "   - To fetch exact temperatures, current conditions, or specific forecasts, use the `weather` tool.\n"
-        "3. **Execution**:\n"
-        "   - You can use both tools if the task requires both context (news) and specific data (weather).\n"
-        "   - Summarize your findings clearly."
-    )
+def plan_observer_node(state: main_state):
+    """ตรวจสอบความถูกต้องของ plan_steps กับ agent_specs"""
+    plan_steps = state.get("plan_steps", [])
+    agent_specs = state.get("agent_specs", [])
+
+    if not plan_steps or not agent_specs:
+        print("=== Plan Observer === INVALID: empty plan or specs → replan")
+        return {"plan_ready": False}
+
+    spec_names = {spec["name"] for spec in agent_specs}
+    for step in plan_steps:
+        if step["agent_name"] not in spec_names:
+            print(f"=== Plan Observer === INVALID: step {step['step_id']} references unknown agent '{step['agent_name']}' → replan")
+            return {"plan_ready": False}
+
+    print(f"=== Plan Observer === OK: {len(plan_steps)} steps, {len(agent_specs)} agent specs")
+    return {"plan_ready": True}
+
+
+def agent_observer_node(state: main_state):
+    """ตรวจสอบว่า agent_specs ครบถ้วน — unknown tools จะถูกสร้างโดย action_observer อัตโนมัติ"""
+    agent_specs = state.get("agent_specs", [])
+
+    for spec in agent_specs:
+        if not spec.get("role") or not spec.get("goal"):
+            print(f"=== Agent Observer === INVALID: spec '{spec['name']}' missing role/goal → replan")
+            return {"agents_ready": False}
+        unknown = [t for t in spec.get("tools_required", []) if t not in TOOL_REGISTRY]
+        if unknown:
+            print(f"=== Agent Observer === NOTE: '{spec['name']}' uses unknown tools {unknown} — will be created at runtime")
+
+    print(f"=== Agent Observer === OK: all {len(agent_specs)} specs valid")
+    return {"agents_ready": True}
+
+
+def action_observer_node(state: main_state):
+    """Dynamic agent runner — สร้างและรัน agent ตาม plan_steps ทีละ step"""
+    plan_steps = sorted(state.get("plan_steps", []), key=lambda s: s["step_id"])
+    specs_by_name = {spec["name"]: spec for spec in state.get("agent_specs", [])}
+
+    # ส่ง full conversation ให้ agent เพื่อให้มี context ครบ
+    full_conversation = "\n".join([
+        f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
+        for m in state["messages"]
+    ])
+
+    collected_results = {}
+
+    for step in plan_steps:
+        agent_name = step["agent_name"]
+        spec = specs_by_name.get(agent_name)
+        if not spec:
+            continue
+
+        print(f"=== Action Observer === Step {step['step_id']}: running '{agent_name}'")
+
+        # ── SKILL MAKER: ถ้า step นี้ต้องการ manage_skill → สร้าง tool ก่อนแล้วไป step ถัดไป ──
+        if "manage_skill" in spec.get("tools_required", []):
+            print(f"=== Skill Maker === Step {step['step_id']}: creating tool for '{agent_name}'")
+            skill_system = (
+                "You are a Tool-Making Agent. Create a new Python tool based on the task description.\n\n"
+                "## STEPS:\n"
+                "1. Understand what capability is needed.\n"
+                "2. Write a Python @tool function as source_code.\n"
+                "3. Write a short description.\n"
+                "4. Write arguments as a valid JSON string for tool_schema_json.\n"
+                "5. Call manage_skill to save it to the memory database.\n"
+            )
+            prev_results_str = ""
+            if collected_results:
+                parts = [f"### {n}:\n{r}" for n, r in collected_results.items()]
+                prev_results_str = "\n\n## RESULTS FROM PREVIOUS STEPS:\n" + "\n\n".join(parts)
+            try:
+                skill_agent = create_agent(model=llm, tools=[TOOLS_MANAGE])
+                skill_result = skill_agent.invoke({"messages": [
+                    {"role": "system", "content": skill_system},
+                    {"role": "user",   "content": step["description"] + prev_results_str},
+                ]})
+
+                # ── Dynamic tool registration ─────────────────────────────
+                # Extract source_code from the manage_skill tool call args
+                # then exec() it and register into TOOL_REGISTRY so later
+                # steps can actually call the new tool.
+                for _msg in skill_result.get("messages", []):
+                    if hasattr(_msg, "tool_calls") and _msg.tool_calls:
+                        for _tc in _msg.tool_calls:
+                            if _tc["name"] == "manage_skill":
+                                _sc = _tc["args"].get("source_code", "")
+                                _tn = _tc["args"].get("name", "")
+                                if _sc and _tn:
+                                    try:
+                                        from langchain_core.tools import tool as _tool_dec
+                                        _ns = {"tool": _tool_dec, "__builtins__": __builtins__}
+                                        exec(_sc, _ns)  # noqa: S102
+                                        for _val in _ns.values():
+                                            if (
+                                                hasattr(_val, "name")
+                                                and hasattr(_val, "invoke")
+                                                and _val is not _tool_dec
+                                            ):
+                                                TOOL_REGISTRY[_tn] = _val
+                                                print(f"=== Skill Maker === Registered '{_tn}' into TOOL_REGISTRY")
+                                                break
+                                    except Exception as _exec_err:
+                                        print(f"=== Skill Maker === exec/register failed: {_exec_err}")
+                                break
+
+                collected_results[agent_name] = skill_result
+                print(f"=== Skill Maker === Step {step['step_id']}: tool created for '{agent_name}'")
+            except Exception as e:
+                print(f"=== Skill Maker === Step {step['step_id']}: ERROR: {e}")
+                collected_results[agent_name] = f"ERROR: {e}"
+            continue 
+        # ────────────────────────────────────────────────────────────────────────
+
+        # Resolve tools — skip unknown ones
+        missing_tools = [t for t in spec["tools_required"] if t not in TOOL_REGISTRY]
+        if missing_tools:
+            print(f"=== Action Observer === WARNING: missing tools {missing_tools} for '{agent_name}' — skipping")
+            continue
+        tools_for_agent = [TOOL_REGISTRY[t] for t in spec["tools_required"]]
+
+        # Build skill documentation for tools that have SKILL.md
+        skill_docs_parts = []
+        for t in spec["tools_required"]:
+            if t in SKILL_DOC_MAP:
+                doc = get_select_skills_prompt(SKILL_DOC_MAP[t])
+                if doc:
+                    skill_docs_parts.append(f"## {t.upper()} TOOL DOCUMENTATION:\n{doc}")
+        skill_docs = "\n\n".join(skill_docs_parts)
+
+        system = (
+            (f"{skill_docs}\n\n" if skill_docs else "") +
+            f"You are {spec['role']}.\n"
+            f"Your goal: {spec['goal']}\n\n"
+            f"## YOUR TASK:\n{step['description']}"
+        )
+
+        # Pass results from previous steps as context
+        prev_results_str = ""
+        if collected_results:
+            parts = [f"### {n}:\n{r}" for n, r in collected_results.items()]
+            prev_results_str = "\n\n## RESULTS FROM PREVIOUS STEPS (use as input context):\n" + "\n\n".join(parts)
 
     messages = [
         {"role": "system", "content": system},
@@ -151,64 +398,79 @@ def skill_maker_agent_node(state: main_state):
         {"role": "system", "content": system},
         {"role": "user", "content": skill_task}
     ]
-    llm_skill_maker = create_agent(model=llm, tools=[TOOLS_MANAGE, TOOLS_SEARCH])
+    llm_skill_maker = create_agent(model=llm, tools=[TOOLS_MANAGE])
     result = llm_skill_maker.invoke({"messages": messages})
     return {"agent_results": {"skill_maker": result}}
 
 # Fusion and presentation nodes
 def fusion_node(state: main_state):
-    user_question = state["messages"][-1].content
+    # ใช้ full conversation เพื่อให้รู้โจทย์หลักและข้อมูลที่ clarify มาทั้งหมด
+    full_conversation = "\n".join([
+        f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
+        for m in state["messages"]
+    ])
     raw_data = state.get('agent_results', {})
+    agent_specs = state.get('agent_specs', [])
 
-    prompt = f"""You are an expert financial and data analyst. 
-        Your MOST IMPORTANT rule: Answer the user's question IMMEDIATELY in the very first sentence, then provide the supporting details.
+    prompt = f"""You are an expert analyst and synthesizer.
+        Your MOST IMPORTANT rule: Answer the user's original question IMMEDIATELY in the very first sentence, then provide supporting details.
 
-        ## USER QUESTION:
-        "{user_question}"
+        ## CONVERSATION HISTORY (original request + any clarifications):
+        {full_conversation}
 
-        ## RAW DATA:
+        ## AGENT SPECS USED:
+        {agent_specs}
+
+        ## RAW DATA FROM AGENTS:
         {raw_data}
 
-        ## STRICT OUTPUT FORMAT:
-        **1. Direct Answer:**
-        - Start immediately with the final conclusion or recommendation answering the user's question. 
-        - Do NOT use filler intros like "Based on the data..." or "Here is the analysis...".
-        - Example: "You should monitor utility stocks like EXC and agricultural stocks like ADM due to the extreme cold fronts in the Midwest."
-
-        **2. Explanation (The 'Why'):**
-        - Provide 2-3 concise bullet points explaining the logical connection between the weather events and the stock sectors.
-
-        **3. Data Snapshot:**
-        - List the fetched tickers with their current price and a 5-word micro-summary.
-        - Example: "EXC ($48.57): Cold weather increases heating demand."
-
-        **Constraints:** Keep the entire response under 150-200 words. Be direct, professional, and analytical.
+        ## OUTPUT RULES:
+        1. Start with a direct answer to the user's original question — no filler intros.
+        2. Provide 2-3 bullet points explaining the key findings or reasoning.
+        3. If data was fetched (stocks, weather, etc.), include a concise Data Snapshot.
+        4. If no external data was needed (e.g. calculation tasks), skip the Data Snapshot.
+        5. Keep the entire response under 200 words. Be clear and direct.
         """
-    
+
     results = llm.invoke(prompt)
     return {"fusion_results": results}
 
 
 workflow = StateGraph(main_state)
-workflow.add_node("planner", planner_node)
-workflow.add_node("weather_agent", weather_agent_node)
-workflow.add_node("stocks_agent", stocks_agent_node)
-workflow.add_node("skill_maker_agent", skill_maker_agent_node)
-workflow.add_node("fusion", fusion_node)
+workflow.add_node("input_validator",  input_validator_node)
+workflow.add_node("planner",          planner_node)
+workflow.add_node("plan_observer",    plan_observer_node)
+workflow.add_node("agent_observer",   agent_observer_node)
+workflow.add_node("action_observer",  action_observer_node)
+workflow.add_node("fusion",           fusion_node)
 
-workflow.set_entry_point("planner")
+workflow.set_entry_point("input_validator")
+
 workflow.add_conditional_edges(
-    "planner", 
-    route_to_agents,
-    {
-        "weather_agent": "weather_agent",
-        "stocks_agent": "stocks_agent",
-        "skill_maker_agent": "skill_maker_agent",
-        "fusion": "fusion"
-    }
+    "input_validator",
+    route_after_validation,
+    {"input_validator": "input_validator", "planner": "planner"}
 )
-workflow.add_edge("weather_agent", "fusion")
-workflow.add_edge("stocks_agent", "fusion")
-workflow.add_edge("skill_maker_agent", "fusion")
+
+workflow.add_edge("planner", "plan_observer")
+
+workflow.add_conditional_edges(
+    "plan_observer",
+    route_after_plan_observer,
+    {"planner": "planner", "agent_observer": "agent_observer"}
+)
+
+workflow.add_conditional_edges(
+    "agent_observer",
+    route_after_agent_observer,
+    {"planner": "planner", "action_observer": "action_observer"}
+)
+
+workflow.add_conditional_edges(
+    "action_observer",
+    route_after_action_observer,
+    {"plan_observer": "plan_observer", "fusion": "fusion"}
+)
+
 workflow.add_edge("fusion", END)
-app = workflow.compile()
+app = workflow.compile(checkpointer=MemorySaver())
