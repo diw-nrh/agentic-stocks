@@ -32,4 +32,34 @@ def manage_skill(name: str, description: str, source_code: str, tool_schema_json
     except Exception as e:
         return f"Error connecting to memory service: {e}"
 
+@tool
+def search_skill(query: str, limit: int = 3) -> str:
+    """
+    Use this tool to SEARCH for an existing skill or tool in the memory database.
+    Always use this BEFORE creating a new skill to avoid duplicates.
+    - query: What the skill should do (e.g. "calculate math", "parse xml").
+    - limit: Max number of results to return.
+    """
+    # ยิง Request ไปที่ Database ของ Memory Service
+    url = "http://memory-service:8000/skills/search"
+    payload = {
+        "query": query,
+        "limit": limit
+    }
+
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        results = response.json().get("results", [])
+        if not results:
+            return "No matching skills found in database."
+        
+        output = "Found the following skills:\n"
+        for r in results:
+            output += f"- Name: {r.get('name')}\n  Description: {r.get('description')}\n  Code: {r.get('source_code')}\n"
+        return output
+    except Exception as e:
+        return f"Error connecting to memory service: {e}"
+
 TOOLS_MANAGE = manage_skill
+TOOLS_SEARCH = search_skill

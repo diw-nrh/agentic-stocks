@@ -1,12 +1,13 @@
 import sys
 import os
-from sqlmodel import Session, select
+from sqlmodel import Session, select, or_
 from memory.models import Skill
 
 # Load shared config
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.config import Config
-from langchain_openai import OpenAIEmbeddings
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage
 
 # Create Embedding Model 
 embeddings_model = OpenAIEmbeddings(
@@ -24,12 +25,44 @@ def get_embedding(text: str):
         print(f"Generate Embedding Error: {e}")
         return [0.0] * 1536
 
+llm_transformer = ChatOpenAI(
+    model=Config.AI.MODEL_NAME, 
+    api_key=Config.AI.NOVITA_API_KEY, 
+    base_url=Config.AI.BASE_URL
+)
+
+def transform_query(query: str) -> str:
+    """Modular RAG: Transforms a simple user query into a technical query for better vector search."""
+    try:
+        sys_msg = SystemMessage(content="You are an expert search query optimizer for code. Convert the user's intent into a comma-separated list of technical keywords (e.g., Python functions, API names) suitable for semantic searching of tool source code. Reply ONLY with the keywords.")
+        hum_msg = HumanMessage(content=query)
+        response = llm_transformer.invoke([sys_msg, hum_msg])
+        return response.content.strip()
+    except Exception as e:
+        print(f"Query Transform Error: {e}")
+        return query
+
 def search_skills(session: Session, query: str, limit: int = 3):
-    query_vector = get_embedding(query)
+    # Modular RAG: Transform Query
+    technical_query = transform_query(query)
+    query_vector = get_embedding(technical_query)
     
-    # Cosine distance to find similar skills in Memory
-    stmt = select(Skill).order_by(Skill.embedding.cosine_distance(query_vector)).limit(limit)
+    # Advanced RAG: Hybrid Search approach
+    # Phase 1: Try finding skills that share exact keywords AND sort by semantic closeness
+    stmt = select(Skill).where(
+        or_(
+            Skill.name.ilike(f"%{query}%"),
+            Skill.description.ilike(f"%{query}%")
+        )
+    ).order_by(Skill.embedding.cosine_distance(query_vector)).limit(limit)
+    
     results = session.exec(stmt).all()
+    
+    # Phase 2: Fallback to pure semantic search if no keyword matches
+    if not results:
+        stmt = select(Skill).order_by(Skill.embedding.cosine_distance(query_vector)).limit(limit)
+        results = session.exec(stmt).all()
+        
     return results
 
 def save_skill(session: Session, skill_data: dict):

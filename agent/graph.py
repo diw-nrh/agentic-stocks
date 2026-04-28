@@ -6,7 +6,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt, TOOLS_NEWS
-from skills.registry import TOOLS_MANAGE
+from skills.registry import TOOLS_MANAGE, TOOLS_SEARCH
 from shared.config import Config
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_agent
@@ -151,7 +151,7 @@ def skill_maker_agent_node(state: main_state):
         {"role": "system", "content": system},
         {"role": "user", "content": skill_task}
     ]
-    llm_skill_maker = create_agent(model=llm, tools=[TOOLS_MANAGE])
+    llm_skill_maker = create_agent(model=llm, tools=[TOOLS_MANAGE, TOOLS_SEARCH])
     result = llm_skill_maker.invoke({"messages": messages})
     return {"agent_results": {"skill_maker": result}}
 
