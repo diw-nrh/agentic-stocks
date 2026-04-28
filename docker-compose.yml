@@ -115,7 +115,7 @@ services:
     ports:
       - "9004:8000"
     environment:
-      DATABASE_URL: postgresql://agentic121:1234@postgres:5432/agentic_db
+      MEMORY_DB_URL: postgresql://agentic121:1234@postgres:5432/agentic_db
     depends_on:
       postgres:
         condition: service_healthy
