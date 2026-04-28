@@ -22,7 +22,7 @@ class Config:
 
     class Memory:
         URL = os.getenv("MEMORY_SERVICE_URL", "http://localhost:9004")
-        DATABASE_URL = os.getenv("MEMORY_DB_URL", "postgresql://hermes:hermes_pass@localhost:5432/hermes_db")
+        DATABASE_URL = os.getenv("MEMORY_DB_URL", "postgresql://agentic121:1234@postgres:5432/agentic_db")
         
     @classmethod
     def validate(cls):
