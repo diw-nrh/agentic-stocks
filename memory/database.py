@@ -1,9 +1,13 @@
 import os
+import sys
 from sqlmodel import create_engine, SQLModel, Session
 from sqlalchemy import text
 
-# We default to the internal docker network URL if not provided by the .env
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://hermes:hermes_pass@postgres:5432/hermes_db")
+# Load shared config
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.config import Config
+
+DATABASE_URL = Config.Memory.DATABASE_URL
 
 engine = create_engine(DATABASE_URL)
 
