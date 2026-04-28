@@ -1,6 +1,10 @@
 import json
 import requests
 from langchain_core.tools import tool
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.config import Config
 
 @tool
 def manage_skill(name: str, description: str, source_code: str, tool_schema_json: str) -> str:
@@ -17,7 +21,7 @@ def manage_skill(name: str, description: str, source_code: str, tool_schema_json
         return f"Error parsing schema JSON: {e}"
 
     # ยิง Request ไปที่ Database ของ Memory Service
-    url = "http://memory-service:8000/skills/save"
+    url = f"{Config.Memory.URL}/skills/save"
     payload = {
         "name": name,
         "description": description,
@@ -41,7 +45,7 @@ def search_skill(query: str, limit: int = 3) -> str:
     - limit: Max number of results to return.
     """
     # ยิง Request ไปที่ Database ของ Memory Service
-    url = "http://memory-service:8000/skills/search"
+    url = f"{Config.Memory.URL}/skills/search"
     payload = {
         "query": query,
         "limit": limit

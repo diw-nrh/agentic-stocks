@@ -16,3 +16,7 @@ class main_state(MessagesState):
     plan_ready: bool       # set by plan_observer
     agents_ready: bool     # set by agent_observer
     replan_count: int      # guard against infinite replan loops
+
+    # Skill maker step tracking
+    current_step_idx: int   # tracks which plan_step action_observer resumes from
+    pending_skill_step: dict  # step being routed to skill_maker_node

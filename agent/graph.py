@@ -6,7 +6,7 @@ from langgraph.types import interrupt
 from langchain_openai import ChatOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt, TOOLS_NEWS
-from skills.registry import TOOLS_MANAGE
+from skills.registry import TOOLS_MANAGE, TOOLS_SEARCH
 from shared.config import Config
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_agent
@@ -25,6 +25,7 @@ TOOL_REGISTRY = {
     "news":         TOOLS_NEWS,
     "stock":        TOOLS_STOCK,
     "manage_skill": TOOLS_MANAGE,
+    "search_skill": TOOLS_SEARCH,
 }
 
 # def _load_skills_from_db():
@@ -233,19 +234,20 @@ def agent_observer_node(state: main_state):
 
 
 def action_observer_node(state: main_state):
-    """Dynamic agent runner — สร้างและรัน agent ตาม plan_steps ทีละ step"""
+    """Dynamic agent runner — search skill inline, route to skill_maker if not found"""
     plan_steps = sorted(state.get("plan_steps", []), key=lambda s: s["step_id"])
     specs_by_name = {spec["name"]: spec for spec in state.get("agent_specs", [])}
+    current_step_idx = state.get("current_step_idx", 0)
 
-    # ส่ง full conversation ให้ agent เพื่อให้มี context ครบ
     full_conversation = "\n".join([
         f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
         for m in state["messages"]
     ])
 
-    collected_results = {}
+    # โหลด agent_results สะสมจาก state (อาจมีผลจาก round ก่อนหน้า)
+    collected_results = dict(state.get("agent_results") or {})
 
-    for step in plan_steps:
+    for i, step in enumerate(plan_steps[current_step_idx:], start=current_step_idx):
         agent_name = step["agent_name"]
         spec = specs_by_name.get(agent_name)
         if not spec:
@@ -253,64 +255,41 @@ def action_observer_node(state: main_state):
 
         print(f"=== Action Observer === Step {step['step_id']}: running '{agent_name}'")
 
-        # ── SKILL MAKER: ถ้า step นี้ต้องการ manage_skill → สร้าง tool ก่อนแล้วไป step ถัดไป ──
+        # ── ถ้า step ต้องการ manage_skill → search ก่อนเสมอ ─────────────────
         if "manage_skill" in spec.get("tools_required", []):
-            print(f"=== Skill Maker === Step {step['step_id']}: creating tool for '{agent_name}'")
-            skill_system = (
-                "You are a Tool-Making Agent. Create a new Python tool based on the task description.\n\n"
-                "## STEPS:\n"
-                "1. Understand what capability is needed.\n"
-                "2. Write a Python @tool function as source_code.\n"
-                "3. Write a short description.\n"
-                "4. Write arguments as a valid JSON string for tool_schema_json.\n"
-                "5. Call manage_skill to save it to the memory database.\n"
-            )
-            prev_results_str = ""
-            if collected_results:
-                parts = [f"### {n}:\n{r}" for n, r in collected_results.items()]
-                prev_results_str = "\n\n## RESULTS FROM PREVIOUS STEPS:\n" + "\n\n".join(parts)
-            try:
-                skill_agent = create_agent(model=llm, tools=[TOOLS_MANAGE])
-                skill_result = skill_agent.invoke({"messages": [
-                    {"role": "system", "content": skill_system},
-                    {"role": "user",   "content": step["description"] + prev_results_str},
-                ]})
+            import re as _re
+            from langchain_core.tools import tool as _tool_dec
+            _search_out = TOOLS_SEARCH.invoke({"query": step["description"], "limit": 1})
+            print(f"=== Action Observer === search_skill: {_search_out[:120]}...")
 
-                # ── Dynamic tool registration ─────────────────────────────
-                # Extract source_code from the manage_skill tool call args
-                # then exec() it and register into TOOL_REGISTRY so later
-                # steps can actually call the new tool.
-                for _msg in skill_result.get("messages", []):
-                    if hasattr(_msg, "tool_calls") and _msg.tool_calls:
-                        for _tc in _msg.tool_calls:
-                            if _tc["name"] == "manage_skill":
-                                _sc = _tc["args"].get("source_code", "")
-                                _tn = _tc["args"].get("name", "")
-                                if _sc and _tn:
-                                    try:
-                                        from langchain_core.tools import tool as _tool_dec
-                                        _ns = {"tool": _tool_dec, "__builtins__": __builtins__}
-                                        exec(_sc, _ns)  # noqa: S102
-                                        for _val in _ns.values():
-                                            if (
-                                                hasattr(_val, "name")
-                                                and hasattr(_val, "invoke")
-                                                and _val is not _tool_dec
-                                            ):
-                                                TOOL_REGISTRY[_tn] = _val
-                                                print(f"=== Skill Maker === Registered '{_tn}' into TOOL_REGISTRY")
-                                                break
-                                    except Exception as _exec_err:
-                                        print(f"=== Skill Maker === exec/register failed: {_exec_err}")
-                                break
+            _name_m = _re.search(r"- Name: (.+)", _search_out)
+            _code_idx = _search_out.find("  Code: ")
 
-                collected_results[agent_name] = skill_result
-                print(f"=== Skill Maker === Step {step['step_id']}: tool created for '{agent_name}'")
-            except Exception as e:
-                print(f"=== Skill Maker === Step {step['step_id']}: ERROR: {e}")
-                collected_results[agent_name] = f"ERROR: {e}"
-            continue 
-        # ────────────────────────────────────────────────────────────────────────
+            if _name_m and _code_idx != -1 and "No matching skills found" not in _search_out:
+                # พบใน DB → register แล้วทำต่อ
+                _tn = _name_m.group(1).strip()
+                _sc = _search_out[_code_idx + len("  Code: "):]
+                try:
+                    _ns = {"tool": _tool_dec, "__builtins__": __builtins__}
+                    exec(_sc, _ns)  # noqa: S102
+                    for _val in _ns.values():
+                        if hasattr(_val, "name") and hasattr(_val, "invoke") and _val is not _tool_dec:
+                            TOOL_REGISTRY[_tn] = _val
+                            print(f"=== Action Observer === Reused '{_tn}' from DB")
+                            break
+                except Exception as _e:
+                    print(f"=== Action Observer === register failed: {_e}")
+                collected_results[agent_name] = _search_out
+            else:
+                # ไม่พบ → route ไปให้ skill_maker_node สร้าง
+                print(f"=== Action Observer === '{agent_name}' needs new skill → routing to skill_maker")
+                return {
+                    "agent_results": collected_results,
+                    "current_step_idx": i,
+                    "pending_skill_step": step,
+                }
+            continue
+        # ─────────────────────────────────────────────────────────────────────
 
         # Resolve tools — skip unknown ones
         missing_tools = [t for t in spec["tools_required"] if t not in TOOL_REGISTRY]
@@ -355,7 +334,74 @@ def action_observer_node(state: main_state):
             print(f"=== Action Observer === Step {step['step_id']}: ERROR in '{agent_name}': {e}")
             collected_results[agent_name] = f"ERROR: {e}"
 
-    return {"agent_results": collected_results}
+    return {"agent_results": collected_results, "current_step_idx": len(plan_steps), "pending_skill_step": {}}
+
+
+def skill_maker_node(state: main_state):
+    """สร้าง tool ใหม่ บันทึกลง DB และ register เข้า TOOL_REGISTRY แล้ว route กลับไป action_observer"""
+    step = state.get("pending_skill_step", {})
+    agent_name = step.get("agent_name", "unknown")
+    print(f"=== Skill Maker === Step {step.get('step_id')}: creating tool for '{agent_name}'")
+
+    collected_results = dict(state.get("agent_results") or {})
+    prev_results_str = ""
+    if collected_results:
+        parts = [f"### {n}:\n{r}" for n, r in collected_results.items()]
+        prev_results_str = "\n\n## RESULTS FROM PREVIOUS STEPS:\n" + "\n\n".join(parts)
+
+    skill_system = (
+        "You are a Tool-Making Agent.\n\n"
+        "## STEPS:\n"
+        "1. Understand what capability is needed.\n"
+        "2. Write a Python @tool function as source_code.\n"
+        "3. Write a short description.\n"
+        "4. Write arguments as a valid JSON string for tool_schema_json.\n"
+        "5. Call manage_skill to save it to the memory database.\n"
+    )
+
+    try:
+        skill_agent = create_agent(model=llm, tools=[TOOLS_MANAGE])
+        skill_result = skill_agent.invoke({"messages": [
+            {"role": "system", "content": skill_system},
+            {"role": "user",   "content": step.get("description", "") + prev_results_str},
+        ]})
+
+        # Search หลังสร้างเสร็จ → register เข้า TOOL_REGISTRY
+        import re as _re
+        from langchain_core.tools import tool as _tool_dec
+        _search_out = TOOLS_SEARCH.invoke({"query": step.get("description", ""), "limit": 1})
+        _name_m = _re.search(r"- Name: (.+)", _search_out)
+        _code_idx = _search_out.find("  Code: ")
+        if _name_m and _code_idx != -1:
+            _tn = _name_m.group(1).strip()
+            _sc = _search_out[_code_idx + len("  Code: "):]
+            try:
+                _ns = {"tool": _tool_dec, "__builtins__": __builtins__}
+                exec(_sc, _ns)  # noqa: S102
+                for _val in _ns.values():
+                    if hasattr(_val, "name") and hasattr(_val, "invoke") and _val is not _tool_dec:
+                        TOOL_REGISTRY[_tn] = _val
+                        print(f"=== Skill Maker === Registered '{_tn}' into TOOL_REGISTRY")
+                        break
+            except Exception as _e:
+                print(f"=== Skill Maker === exec/register failed: {_e}")
+
+        print(f"=== Skill Maker === Done → back to action_observer (step {state.get('current_step_idx', 0) + 1})")
+        return {
+            "agent_results": {agent_name: skill_result},
+            "current_step_idx": state.get("current_step_idx", 0) + 1,
+            "pending_skill_step": {},
+        }
+
+    except Exception as e:
+        print(f"=== Skill Maker === ERROR: {e}")
+        return {
+            "agent_results": {agent_name: f"ERROR: {e}"},
+            "current_step_idx": state.get("current_step_idx", 0) + 1,
+            "pending_skill_step": {},
+        }
+
+
 
 
 # Routing for observer chain
@@ -376,6 +422,9 @@ def route_after_agent_observer(state: main_state):
 
 
 def route_after_action_observer(state: main_state):
+    # ถ้ายังมี pending skill step → ไปสร้างที่ skill_maker ก่อน
+    if state.get("pending_skill_step"):
+        return "skill_maker"
     results = state.get("agent_results", {})
     replan_count = state.get("replan_count", 0)
     # ถ้ามี agent ที่ error และยังไม่เกิน 3 รอบ → replan
@@ -425,6 +474,7 @@ workflow.add_node("planner",          planner_node)
 workflow.add_node("plan_observer",    plan_observer_node)
 workflow.add_node("agent_observer",   agent_observer_node)
 workflow.add_node("action_observer",  action_observer_node)
+workflow.add_node("skill_maker",      skill_maker_node)
 workflow.add_node("fusion",           fusion_node)
 
 workflow.set_entry_point("input_validator")
@@ -452,8 +502,10 @@ workflow.add_conditional_edges(
 workflow.add_conditional_edges(
     "action_observer",
     route_after_action_observer,
-    {"plan_observer": "plan_observer", "fusion": "fusion"}
+    {"skill_maker": "skill_maker", "plan_observer": "plan_observer", "fusion": "fusion"}
 )
+
+workflow.add_edge("skill_maker", "action_observer")
 
 workflow.add_edge("fusion", END)
 app = workflow.compile(checkpointer=MemorySaver())
