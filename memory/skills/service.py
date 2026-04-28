@@ -1,10 +1,10 @@
 import sys
 import os
 from sqlmodel import Session, select, or_
-from memory.models import Skill
+from memory.skills.models import Skill
 
 # Load shared config
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from shared.config import Config
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage

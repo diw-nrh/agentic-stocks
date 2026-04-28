@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from sqlmodel import Session
 from memory.database import get_session
-from memory import service
+from memory.skills import service
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
