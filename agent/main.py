@@ -1,5 +1,6 @@
 from graph import app
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 
 
 def extract_content(val):
@@ -49,9 +50,6 @@ def format_update(node_name, state):
     if not isinstance(state, dict):
         return extract_content(state)
 
-    if "agent_tasks" in state:
-        return state["agent_tasks"]
-
     if "agent_results" in state:
         readable = {}
         for key, value in state["agent_results"].items():
@@ -62,23 +60,35 @@ def format_update(node_name, state):
         return extract_content(state["fusion_results"])
 
 
-    return {k: extract_content(v) for k, v in state.items()}
+    return {k: extract_content(v) for k, v in state.items() if k != "messages"}
+
+
+def run_stream(input_data, config):
+    """รัน graph และ handle interrupt (Human-in-the-Loop) อัตโนมัติ"""
+    while True:
+        interrupted = False
+        for chunk in app.stream(input_data, config, stream_mode="updates"):
+            if "__interrupt__" in chunk:
+                interrupt_info = chunk["__interrupt__"]
+                question = interrupt_info[0].value.get("question", "Please provide more information: ")
+                print(f"\n[Agent]: {question}")
+                user_answer = input("You: ").strip()
+                input_data = Command(resume=user_answer)
+                interrupted = True
+                break
+
+            for node_name, state in chunk.items():
+                if node_name == "__interrupt__":
+                    continue
+                formatted = format_update(node_name, state)
+                if formatted:
+                    print(f"\n[{node_name}]: {formatted}")
+
+        if not interrupted:
+            break
+
 
 if __name__ == "__main__":
-    topic = input("Enter a topic: ")
-    stream_mode = input("Enter stream_mode (comma separated, default: updates): ")
-    if stream_mode.strip():
-        stream_mode = [m.strip() for m in stream_mode.split(",") if m.strip()]
-    else:
-        stream_mode = ["updates"]
-
-    for chunk in app.stream(
-        {"messages": [HumanMessage(content=topic)]},
-        stream_mode=stream_mode,
-        version="v2",
-    ):
-        if chunk.get("type") == "updates":
-            for node_name, state in chunk["data"].items():
-                print(f"Node {node_name} updated: {format_update(node_name, state)}")
-        elif chunk.get("type") == "custom":
-            print(f"Status: {extract_content(chunk['data'])}")
+    topic = input("Enter a topic: ").strip()
+    config = {"configurable": {"thread_id": "main-session"}}
+    run_stream({"messages": [HumanMessage(content=topic)]}, config)

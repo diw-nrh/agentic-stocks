@@ -74,3 +74,4 @@ def news(news: str, location: str = "thailand", start: str = None, end: str = No
 TOOLS_WEATHER = weather
 TOOLS_STOCK = stock
 TOOLS_NEWS = news
+tools = [TOOLS_WEATHER, TOOLS_STOCK, TOOLS_NEWS]
