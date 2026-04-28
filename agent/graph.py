@@ -6,7 +6,7 @@ from langgraph.types import interrupt
 from langchain_openai import ChatOpenAI
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt, TOOLS_NEWS
-from skills.registry import TOOLS_MANAGE, TOOLS_SEARCH
+from skills.registry import TOOLS_MANAGE
 from shared.config import Config
 from langchain_core.prompts import ChatPromptTemplate
 from langchain.agents import create_agent
@@ -32,7 +32,7 @@ TOOL_REGISTRY = {
 #     import requests
 #     from langchain_core.tools import tool as _tool_dec
 #     try:
-#         resp = requests.get("http://localhost:9004/skills/all", timeout=5)
+#         resp = requests.get("http://memory-service:8000/skills/all", timeout=5)
 #         resp.raise_for_status()
 #         skills = resp.json().get("results", [])
 #         for skill in skills:
@@ -341,66 +341,49 @@ def action_observer_node(state: main_state):
             parts = [f"### {n}:\n{r}" for n, r in collected_results.items()]
             prev_results_str = "\n\n## RESULTS FROM PREVIOUS STEPS (use as input context):\n" + "\n\n".join(parts)
 
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": str(weather_task)}
-    ]
-    
-    # ใส่ Tools ให้ครบทั้ง 2 ตัว
-    llm_weather = create_agent(model=llm, tools=[TOOLS_WEATHER, TOOLS_NEWS])
-    result = llm_weather.invoke({"messages": messages})
-    return {"agent_results": {"weather": result}}
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": full_conversation + prev_results_str},
+        ]
 
-def stocks_agent_node(state: main_state):
-    stocks_task = state.get("agent_tasks", {}).get("stocks_agent", "")
+        try:
+            agent = create_agent(model=llm, tools=tools_for_agent)
+            result = agent.invoke({"messages": messages})
+            collected_results[agent_name] = result
+            print(f"=== Action Observer === Step {step['step_id']}: '{agent_name}' done")
+        except Exception as e:
+            print(f"=== Action Observer === Step {step['step_id']}: ERROR in '{agent_name}': {e}")
+            collected_results[agent_name] = f"ERROR: {e}"
 
-    skill_prompt_stock = get_select_skills_prompt("skills/stock")
-    skill_prompt_news = get_select_skills_prompt("skills/news")
-    
-    system = (
-        f"## STOCK TOOL DOCUMENTATION:\n{skill_prompt_stock}\n\n"
-        f"## NEWS TOOL DOCUMENTATION:\n{skill_prompt_news}\n\n"
-        "You are a specialized Financial Data & News Agent. Your goal is to gather comprehensive information to complete the task.\n\n"
-        "## WORKFLOW & RULES:\n"
-        "1. **Gather Context (News First)**:\n"
-        "   - If the task requires understanding market sentiment or events, use the `news` tool first.\n"
-        "   - ALWAYS set `news='stock'` when looking for financial news.\n"
-        "   - Example: `news(news='stock', location='america', period='current')`\n"
-        "2. **Fetch Data (Stock Prices)**:\n"
-        "   - After understanding the context (or if only prices are needed), identify relevant stock tickers.\n"
-        "   - Call the `stock` tool for EACH ticker one by one (Never pass multiple symbols in one call).\n"
-        "   - Example: `stock(symbols='AAPL', period='current')` then `stock(symbols='MSFT', period='current')`\n"
-        "3. **Synthesize & Output**:\n"
-        "   - Combine the insights from the news and the real-time stock prices.\n"
-        "   - Format your output clearly. Always include TICKER: <data> when discussing specific stocks."
-    )
+    return {"agent_results": collected_results}
 
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": stocks_task}
-    ]
-    llm_stocks = create_agent(model=llm, tools=[TOOLS_STOCK, TOOLS_NEWS])
-    result = llm_stocks.invoke({"messages": messages})
-    return {"agent_results": {"stocks": result}}
 
-def skill_maker_agent_node(state: main_state):
-    skill_task = state.get("agent_tasks", {}).get("skill_maker_agent", "")
-    system = (
-        "You are a specialized Tool-Making Agent. Your goal is to write python code and schemas to create new tools.\n\n"
-        "## WORKFLOW:\n"
-        "1. Understand the missing capability.\n"
-        "2. Write a Python `@tool` function as the `source_code`.\n"
-        "3. Provide a clear `description`.\n"
-        "4. Provide the arguments as a valid JSON string for `tool_schema_json`.\n"
-        "5. Call the `manage_skill` tool to save it into the memory database.\n"
-    )
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": skill_task}
-    ]
-    llm_skill_maker = create_agent(model=llm, tools=[TOOLS_MANAGE])
-    result = llm_skill_maker.invoke({"messages": messages})
-    return {"agent_results": {"skill_maker": result}}
+# Routing for observer chain
+def route_after_plan_observer(state: main_state):
+    if state.get("plan_ready", False):
+        return "agent_observer"
+    if state.get("replan_count", 0) >= 3:  # force through หลัง 3 รอบ
+        return "agent_observer"
+    return "planner"
+
+
+def route_after_agent_observer(state: main_state):
+    if state.get("agents_ready", False):
+        return "action_observer"
+    if state.get("replan_count", 0) >= 3:
+        return "action_observer"
+    return "planner"
+
+
+def route_after_action_observer(state: main_state):
+    results = state.get("agent_results", {})
+    replan_count = state.get("replan_count", 0)
+    # ถ้ามี agent ที่ error และยังไม่เกิน 3 รอบ → replan
+    if replan_count < 3 and any(str(v).startswith("ERROR:") for v in results.values()):
+        print("=== Action Observer === errors detected → replan")
+        return "plan_observer"
+    return "fusion"
+
 
 # Fusion and presentation nodes
 def fusion_node(state: main_state):

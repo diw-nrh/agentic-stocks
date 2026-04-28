@@ -17,7 +17,7 @@ def manage_skill(name: str, description: str, source_code: str, tool_schema_json
         return f"Error parsing schema JSON: {e}"
 
     # ยิง Request ไปที่ Database ของ Memory Service
-    url = "http://localhost:9004/skills/save"
+    url = "http://memory-service:8000/skills/save"
     payload = {
         "name": name,
         "description": description,
