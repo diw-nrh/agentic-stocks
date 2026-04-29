@@ -85,13 +85,14 @@ services:
     container_name: agentic_postgres
     restart: always
     environment:
-      POSTGRES_USER: agentic121 # ฝาก เขียนให้ง่ายด้วย
+      POSTGRES_USER: agentic121
       POSTGRES_PASSWORD: 1234
       POSTGRES_DB: agentic_db
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U agentic121 -d agentic_db" ]
       interval: 5s
@@ -116,6 +117,7 @@ services:
       - "9004:8000"
     environment:
       MEMORY_DB_URL: postgresql://agentic121:1234@postgres:5432/agentic_db
+      PYTHONPATH: /app
     depends_on:
       postgres:
         condition: service_healthy
