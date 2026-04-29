@@ -16,5 +16,4 @@ class SkillBase(SQLModel):
 
 class Skill(SkillBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    # 1536 dimensions is standard for text-embedding-ada-002 or text-embedding-3-small
     embedding: Optional[Any] = Field(sa_column=Column(Vector(4096)))
