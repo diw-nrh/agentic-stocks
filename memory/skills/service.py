@@ -18,12 +18,12 @@ embeddings_model = OpenAIEmbeddings(
 
 def get_embedding(text: str):
     if not text:
-        return [0.0] * 1536
+        return [0.0] * 4096  # ← แก้ตรงนี้
     try:
         return embeddings_model.embed_query(text)
     except Exception as e:
         print(f"Generate Embedding Error: {e}")
-        return [0.0] * 1536
+        return [0.0] * 4096  # ← และตรงนี้
 
 llm_transformer = ChatOpenAI(
     model=Config.AI.MODEL_NAME, 
