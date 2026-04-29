@@ -43,24 +43,24 @@ def transform_query(query: str) -> str:
         return query
 
 def search_skills(session: Session, query: str, limit: int = 3):
-    # Modular RAG: Transform Query
     technical_query = transform_query(query)
     query_vector = get_embedding(technical_query)
     
-    # Advanced RAG: Hybrid Search approach
-    # Phase 1: Try finding skills that share exact keywords AND sort by semantic closeness
+    # Phase 1: ใช้ original query สำหรับ name match
     stmt = select(Skill).where(
         or_(
-            Skill.name.ilike(f"%{technical_query}%"),
-            Skill.description.ilike(f"%{technical_query}%")
+            Skill.name.ilike(f"%{query}%"),
+            Skill.description.ilike(f"%{technical_query}%") 
         )
     ).order_by(Skill.embedding.cosine_distance(query_vector)).limit(limit)
     
     results = session.exec(stmt).all()
     
-    # Phase 2: Fallback to pure semantic search if no keyword matches
+    # Phase 2: pure semantic fallback
     if not results:
-        stmt = select(Skill).order_by(Skill.embedding.cosine_distance(query_vector)).limit(limit)
+        stmt = select(Skill).order_by(
+            Skill.embedding.cosine_distance(query_vector)
+        ).limit(limit)
         results = session.exec(stmt).all()
         
     return results
