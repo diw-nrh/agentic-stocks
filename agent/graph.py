@@ -1,23 +1,30 @@
-#multi agent planner graph
+# Multi-agent planner graph
+import re
 import sys
 import os
-from langgraph.graph import StateGraph, END
-from langgraph.types import interrupt
-from langchain_openai import ChatOpenAI
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.registry import TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt, TOOLS_NEWS
-from skills.registry import TOOLS_MANAGE, TOOLS_SEARCH
-from shared.config import Config
-from langchain_core.prompts import ChatPromptTemplate
-from langchain.agents import create_agent
-from state import main_state
-from schema import DualPlan, InputValidation
-from langchain_core.messages import HumanMessage, AIMessage
-from langgraph.checkpoint.memory import MemorySaver
 
-llm = ChatOpenAI(model=Config.AI.MODEL_NAME, 
-                   api_key=Config.AI.NOVITA_API_KEY, 
-                   base_url=Config.AI.BASE_URL)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.tools import tool as tool_decorator
+from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph import END, StateGraph
+from langgraph.types import interrupt
+
+from schema import DualPlan, InputValidation
+from shared.config import Config
+from skills.registry import TOOLS_MANAGE, TOOLS_SEARCH
+from state import main_state
+from tools.registry import TOOLS_NEWS, TOOLS_STOCK, TOOLS_WEATHER, get_select_skills_prompt
+
+llm = ChatOpenAI(
+    model=Config.AI.MODEL_NAME,
+    api_key=Config.AI.NOVITA_API_KEY,
+    base_url=Config.AI.BASE_URL,
+)
 
 # Maps tool name (as declared in AgentSpec) → actual tool object
 TOOL_REGISTRY = {
@@ -28,45 +35,41 @@ TOOL_REGISTRY = {
     "search_skill": TOOLS_SEARCH,
 }
 
-# def _load_skills_from_db():
-#     """โหลด skills ทั้งหมดจาก memory-service DB เข้า TOOL_REGISTRY ตอน startup"""
-#     import requests
-#     from langchain_core.tools import tool as _tool_dec
-#     try:
-#         resp = requests.get("http://memory-service:8000/skills/all", timeout=5)
-#         resp.raise_for_status()
-#         skills = resp.json().get("results", [])
-#         for skill in skills:
-#             name = skill.get("name", "")
-#             source_code = skill.get("source_code", "")
-#             if not name or not source_code:
-#                 continue
-#             try:
-#                 _ns = {"tool": _tool_dec, "__builtins__": __builtins__}
-#                 exec(source_code, _ns)  # noqa: S102
-#                 for _val in _ns.values():
-#                     if (
-#                         hasattr(_val, "name")
-#                         and hasattr(_val, "invoke")
-#                         and _val is not _tool_dec
-#                     ):
-#                         TOOL_REGISTRY[name] = _val
-#                         print(f"[Startup] Loaded skill '{name}' from DB into TOOL_REGISTRY")
-#                         break
-#             except Exception as e:
-#                 print(f"[Startup] Failed to load skill '{name}': {e}")
-#         print(f"[Startup] TOOL_REGISTRY has {len(TOOL_REGISTRY)} tools: {list(TOOL_REGISTRY.keys())}")
-#     except Exception as e:
-#         print(f"[Startup] Could not reach memory-service: {e}")
-
-# _load_skills_from_db()
-
 # Maps tool name → skills doc directory (for building agent system prompts)
 SKILL_DOC_MAP = {
     "weather": "skills/weather",
     "news":    "skills/news",
     "stock":   "skills/stock",
 }
+
+
+# ── Helper ───────────────────────────────────────────────────────────────────
+
+def _search_and_register_skill(query: str) -> str | None:
+    """Search DB for an existing skill matching *query*, exec its code, and
+    register it in TOOL_REGISTRY.  Returns the tool name on success, else None."""
+    search_output = TOOLS_SEARCH.invoke({"query": query, "limit": 1})
+
+    name_match = re.search(r"- Name: (.+)", search_output)
+    code_start = search_output.find("  Code: ")
+
+    if not name_match or code_start == -1 or "No matching skills found" in search_output:
+        return None
+
+    tool_name = name_match.group(1).strip()
+    source_code = search_output[code_start + len("  Code: "):]
+
+    try:
+        namespace = {"tool": tool_decorator, "__builtins__": __builtins__}
+        exec(source_code, namespace)  # noqa: S102
+        for value in namespace.values():
+            if hasattr(value, "name") and hasattr(value, "invoke") and value is not tool_decorator:
+                TOOL_REGISTRY[tool_name] = value
+                return tool_name
+    except Exception as exc:
+        print(f"[skill register] exec failed: {exc}")
+
+    return None
 
 def input_validator_node(state: main_state):
     messages = state["messages"]
@@ -255,41 +258,26 @@ def action_observer_node(state: main_state):
 
         print(f"=== Action Observer === Step {step['step_id']}: running '{agent_name}'")
 
-        # ── ถ้า step ต้องการ manage_skill → search ก่อนเสมอ ─────────────────
+        # ── If the step needs manage_skill → search DB first ────────────────
         if "manage_skill" in spec.get("tools_required", []):
-            import re as _re
-            from langchain_core.tools import tool as _tool_dec
-            _search_out = TOOLS_SEARCH.invoke({"query": step["description"], "limit": 1})
-            print(f"=== Action Observer === search_skill: {_search_out[:120]}...")
+            search_output = TOOLS_SEARCH.invoke({"query": step["description"], "limit": 1})
+            print(f"=== Action Observer === search_skill: {search_output[:120]}...")
 
-            _name_m = _re.search(r"- Name: (.+)", _search_out)
-            _code_idx = _search_out.find("  Code: ")
+            if "No matching skills found" not in search_output:
+                registered_name = _search_and_register_skill(step["description"])
+                if registered_name:
+                    print(f"=== Action Observer === Reused '{registered_name}' from DB")
+                    collected_results[agent_name] = search_output
+                    continue
 
-            if _name_m and _code_idx != -1 and "No matching skills found" not in _search_out:
-                # พบใน DB → register แล้วทำต่อ
-                _tn = _name_m.group(1).strip()
-                _sc = _search_out[_code_idx + len("  Code: "):]
-                try:
-                    _ns = {"tool": _tool_dec, "__builtins__": __builtins__}
-                    exec(_sc, _ns)  # noqa: S102
-                    for _val in _ns.values():
-                        if hasattr(_val, "name") and hasattr(_val, "invoke") and _val is not _tool_dec:
-                            TOOL_REGISTRY[_tn] = _val
-                            print(f"=== Action Observer === Reused '{_tn}' from DB")
-                            break
-                except Exception as _e:
-                    print(f"=== Action Observer === register failed: {_e}")
-                collected_results[agent_name] = _search_out
-            else:
-                # ไม่พบ → route ไปให้ skill_maker_node สร้าง
-                print(f"=== Action Observer === '{agent_name}' needs new skill → routing to skill_maker")
-                return {
-                    "agent_results": collected_results,
-                    "current_step_idx": i,
-                    "pending_skill_step": step,
-                }
+            # Not found in DB → route to skill_maker to create it
+            print(f"=== Action Observer === '{agent_name}' needs new skill → routing to skill_maker")
+            return {
+                "agent_results": collected_results,
+                "current_step_idx": i,
+                "pending_skill_step": step,
+            }
             continue
-        # ─────────────────────────────────────────────────────────────────────
 
         # Resolve tools — skip unknown ones
         missing_tools = [t for t in spec["tools_required"] if t not in TOOL_REGISTRY]
@@ -366,29 +354,28 @@ def skill_maker_node(state: main_state):
             {"role": "user",   "content": step.get("description", "") + prev_results_str},
         ]})
 
-        # Search หลังสร้างเสร็จ → register เข้า TOOL_REGISTRY
-        import re as _re
-        from langchain_core.tools import tool as _tool_dec
-        _search_out = TOOLS_SEARCH.invoke({"query": step.get("description", ""), "limit": 1})
-        _name_m = _re.search(r"- Name: (.+)", _search_out)
-        _code_idx = _search_out.find("  Code: ")
-        if _name_m and _code_idx != -1:
-            _tn = _name_m.group(1).strip()
-            _sc = _search_out[_code_idx + len("  Code: "):]
-            try:
-                _ns = {"tool": _tool_dec, "__builtins__": __builtins__}
-                exec(_sc, _ns)  # noqa: S102
-                for _val in _ns.values():
-                    if hasattr(_val, "name") and hasattr(_val, "invoke") and _val is not _tool_dec:
-                        TOOL_REGISTRY[_tn] = _val
-                        print(f"=== Skill Maker === Registered '{_tn}' into TOOL_REGISTRY")
-                        break
-            except Exception as _e:
-                print(f"=== Skill Maker === exec/register failed: {_e}")
+        # Search after creation → register into TOOL_REGISTRY
+        registered_name = _search_and_register_skill(step.get("description", ""))
+        if registered_name:
+            print(f"=== Skill Maker === Registered '{registered_name}' into TOOL_REGISTRY")
+
+        # Patch agent_specs: replace placeholder tool names with the registered one
+        updated_specs = state.get("agent_specs", [])
+        if registered_name:
+            updated_specs = []
+            for spec in state.get("agent_specs", []):
+                spec = dict(spec)
+                spec["tools_required"] = [
+                    registered_name if (t not in TOOL_REGISTRY and t != "manage_skill") else t
+                    for t in spec.get("tools_required", [])
+                ]
+                updated_specs.append(spec)
+            print(f"=== Skill Maker === Patched agent_specs with '{registered_name}'")
 
         print(f"=== Skill Maker === Done → back to action_observer (step {state.get('current_step_idx', 0) + 1})")
         return {
             "agent_results": {agent_name: skill_result},
+            "agent_specs": updated_specs,
             "current_step_idx": state.get("current_step_idx", 0) + 1,
             "pending_skill_step": {},
         }
@@ -444,29 +431,27 @@ def fusion_node(state: main_state):
     raw_data = state.get('agent_results', {})
     agent_specs = state.get('agent_specs', [])
 
-    prompt = f"""You are an expert analyst and synthesizer.
-        Your MOST IMPORTANT rule: Answer the user's original question IMMEDIATELY in the very first sentence, then provide supporting details.
-
-        ## CONVERSATION HISTORY (original request + any clarifications):
-        {full_conversation}
-
-        ## AGENT SPECS USED:
-        {agent_specs}
-
-        ## RAW DATA FROM AGENTS:
-        {raw_data}
-
-        ## OUTPUT RULES:
-        1. Start with a direct answer to the user's original question — no filler intros.
-        2. Provide 2-3 bullet points explaining the key findings or reasoning.
-        3. If data was fetched (stocks, weather, etc.), include a concise Data Snapshot.
-        4. If no external data was needed (e.g. calculation tasks), skip the Data Snapshot.
-        5. Keep the entire response under 200 words. Be clear and direct.
-        """
+    prompt = (
+        "You are an expert analyst and synthesizer.\n"
+        "Your MOST IMPORTANT rule: Answer the user's original question IMMEDIATELY in the very first sentence, "
+        "then provide supporting details.\n\n"
+        f"## CONVERSATION HISTORY (original request + any clarifications):\n{full_conversation}\n\n"
+        f"## AGENT SPECS USED:\n{agent_specs}\n\n"
+        f"## RAW DATA FROM AGENTS:\n{raw_data}\n\n"
+        "## OUTPUT RULES:\n"
+        "1. Start with a direct answer to the user's original question — no filler intros.\n"
+        "2. Provide 2-3 bullet points explaining the key findings or reasoning.\n"
+        "3. If data was fetched (stocks, weather, etc.), include a concise Data Snapshot.\n"
+        "4. If no external data was needed (e.g. calculation tasks), skip the Data Snapshot.\n"
+        "5. Keep the entire response under 200 words. Be clear and direct."
+    )
 
     results = llm.invoke(prompt)
     return {"fusion_results": results}
 
+
+
+# ── Graph assembly ────────────────────────────────────────────────────────────
 
 workflow = StateGraph(main_state)
 workflow.add_node("input_validator",  input_validator_node)
@@ -482,7 +467,7 @@ workflow.set_entry_point("input_validator")
 workflow.add_conditional_edges(
     "input_validator",
     route_after_validation,
-    {"input_validator": "input_validator", "planner": "planner"}
+    {"input_validator": "input_validator", "planner": "planner"},
 )
 
 workflow.add_edge("planner", "plan_observer")
@@ -490,22 +475,22 @@ workflow.add_edge("planner", "plan_observer")
 workflow.add_conditional_edges(
     "plan_observer",
     route_after_plan_observer,
-    {"planner": "planner", "agent_observer": "agent_observer"}
+    {"planner": "planner", "agent_observer": "agent_observer"},
 )
 
 workflow.add_conditional_edges(
     "agent_observer",
     route_after_agent_observer,
-    {"planner": "planner", "action_observer": "action_observer"}
+    {"planner": "planner", "action_observer": "action_observer"},
 )
 
 workflow.add_conditional_edges(
     "action_observer",
     route_after_action_observer,
-    {"skill_maker": "skill_maker", "plan_observer": "plan_observer", "fusion": "fusion"}
+    {"skill_maker": "skill_maker", "plan_observer": "plan_observer", "fusion": "fusion"},
 )
 
 workflow.add_edge("skill_maker", "action_observer")
-
 workflow.add_edge("fusion", END)
+
 app = workflow.compile(checkpointer=MemorySaver())

@@ -11,7 +11,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 # Create Embedding Model 
 embeddings_model = OpenAIEmbeddings(
-    model="text-embedding-ada-002",
+    model="qwen/qwen3-embedding-8b",
     api_key=Config.AI.NOVITA_API_KEY,
     base_url=Config.AI.BASE_URL
 )
@@ -51,8 +51,8 @@ def search_skills(session: Session, query: str, limit: int = 3):
     # Phase 1: Try finding skills that share exact keywords AND sort by semantic closeness
     stmt = select(Skill).where(
         or_(
-            Skill.name.ilike(f"%{query}%"),
-            Skill.description.ilike(f"%{query}%")
+            Skill.name.ilike(f"%{technical_query}%"),
+            Skill.description.ilike(f"%{technical_query}%")
         )
     ).order_by(Skill.embedding.cosine_distance(query_vector)).limit(limit)
     

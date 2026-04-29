@@ -21,7 +21,10 @@ class SkillSearchRequest(BaseModel):
 @router.post("/search")
 def search_endpoint(req: SkillSearchRequest, session: Session = Depends(get_session)):
     results = service.search_skills(session, req.query, req.limit)
-    return {"results": results}
+    return {"results": [
+        {"name": s.name, "description": s.description, "source_code": s.source_code}
+        for s in results
+    ]}
 
 @router.get("/all")
 def all_endpoint(session: Session = Depends(get_session)):
