@@ -2,6 +2,8 @@
 import re
 import sys
 import os
+import requests
+from typing import Any
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -32,7 +34,6 @@ TOOL_REGISTRY = {
     "news":         TOOLS_NEWS,
     "stock":        TOOLS_STOCK,
     "manage_skill": TOOLS_MANAGE,
-    "search_skill": TOOLS_SEARCH,
 }
 
 # Maps tool name → skills doc directory (for building agent system prompts)
@@ -45,31 +46,112 @@ SKILL_DOC_MAP = {
 
 # ── Helper ───────────────────────────────────────────────────────────────────
 
-def _search_and_register_skill(query: str) -> str | None:
-    """Search DB for an existing skill matching *query*, exec its code, and
-    register it in TOOL_REGISTRY.  Returns the tool name on success, else None."""
-    search_output = TOOLS_SEARCH.invoke({"query": query, "limit": 1})
+def _fix_source_imports(source_code: str) -> str:
+    """Strip tool import lines (tool is injected in namespace) and sanitize unicode chars."""
+    # Remove any `from X import tool` lines — tool is already in exec namespace
+    source_code = re.sub(
+        r"^from\s+\S+\s+import\s+tool\b.*$\n?",
+        "",
+        source_code,
+        flags=re.MULTILINE,
+    )
+    # Replace unicode math/special chars that break Python string literal parsing
+    _unicode_fixes = [
+        ('\u00b2', '^2'), ('\u00b3', '^3'), ('\u00d7', '*'), ('\u00f7', '/'),
+        ('\u2248', '~='), ('\u2260', '!='), ('\u2265', '>='), ('\u2264', '<='),
+        ('\u03c0', '3.14159'), ('\u00b0', ' deg'), ('\u00b5', 'u'),
+        ('\u03b1', 'alpha'), ('\u03b2', 'beta'), ('\u03b3', 'gamma'),
+    ]
+    for bad, good in _unicode_fixes:
+        source_code = source_code.replace(bad, good)
+    return source_code
 
-    name_match = re.search(r"- Name: (.+)", search_output)
-    code_start = search_output.find("  Code: ")
 
-    if not name_match or code_start == -1 or "No matching skills found" in search_output:
-        return None
-
-    tool_name = name_match.group(1).strip()
-    source_code = search_output[code_start + len("  Code: "):]
-
+def _try_register_candidate(name: str, source_code: str) -> bool:
+    """Exec source_code and register the tool into TOOL_REGISTRY. Returns True on success."""
+    if not source_code or "@tool" not in source_code:
+        return False
+    if name in TOOL_REGISTRY:
+        return True  # already loaded
+    # Auto-fix incompatible imports before exec
+    fixed_code = _fix_source_imports(source_code)
     try:
         namespace = {"tool": tool_decorator, "__builtins__": __builtins__}
-        exec(source_code, namespace)  # noqa: S102
-        for value in namespace.values():
-            if hasattr(value, "name") and hasattr(value, "invoke") and value is not tool_decorator:
-                TOOL_REGISTRY[tool_name] = value
-                return tool_name
+        exec(fixed_code, namespace)  # noqa: S102
+        for val in namespace.values():
+            if hasattr(val, "name") and hasattr(val, "invoke") and val is not tool_decorator:
+                TOOL_REGISTRY[name] = val
+                print(f"[register] loaded '{name}' into TOOL_REGISTRY")
+                return True
     except Exception as exc:
-        print(f"[skill register] exec failed: {exc}")
+        print(f"[register] exec failed for '{name}': {exc}")
+    return False
 
+
+def _preload_skills_into_registry(keyword: str) -> list[str]:
+    """Search DB with short keyword (limit=5), register compatible skills. Returns loaded names."""
+    loaded: list[str] = []
+    try:
+        search_out = TOOLS_SEARCH.invoke({"query": keyword, "limit": 5})
+        if "No matching skills found" in search_out:
+            return loaded
+        for block in re.split(r"\n(?=- Name: )", search_out):
+            name_m = re.search(r"- Name: (.+)", block)
+            code_m = re.search(r"  Code: ([\s\S]+)", block)
+            if not name_m or not code_m:
+                continue
+            name = name_m.group(1).strip()
+            code = code_m.group(1).strip()
+            if _try_register_candidate(name, code):
+                loaded.append(name)
+    except Exception as e:
+        print(f"[preload] error: {e}")
+    return loaded
+
+
+def _preload_all_skills() -> list[str]:
+    """Load ALL skills from DB into TOOL_REGISTRY. Called once at planner start."""
+    loaded: list[str] = []
+    try:
+        resp = requests.get(f"{Config.Memory.URL}/skills/all", timeout=10)
+        resp.raise_for_status()
+        results = resp.json().get("results", [])
+        for r in results:
+            name = r.get("name", "").strip()
+            code = r.get("source_code", "").strip()
+            if _try_register_candidate(name, code):
+                loaded.append(name)
+    except Exception as e:
+        print(f"[preload_all] error: {e}")
+    return loaded
+
+
+def _extract_created_skill_name(skill_result: Any) -> str | None:
+    """Parse skill name from skill_maker agent output (success message from manage_skill)."""
+    messages = skill_result.get("messages", []) if isinstance(skill_result, dict) else []
+    for msg in messages:
+        content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+        if isinstance(content, str):
+            m = re.search(r"Skill '([^']+)' saved", content)
+            if m:
+                return m.group(1).strip()
     return None
+
+
+def _format_conversation(messages: list[Any]) -> str:
+    """Format chat messages into a plain conversation string."""
+    return "\n".join([
+        f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
+        for m in messages
+    ])
+
+
+def _format_prev_results(collected_results: dict[str, Any], heading: str) -> str:
+    """Format previous agent results as a context block."""
+    if not collected_results:
+        return ""
+    parts = [f"### {name}:\n{result}" for name, result in collected_results.items()]
+    return f"\n\n## {heading}:\n" + "\n\n".join(parts)
 
 def input_validator_node(state: main_state):
     messages = state["messages"]
@@ -139,11 +221,13 @@ def route_after_validation(state: main_state):
 
 # Planner node
 def planner_node(state: main_state):
-    full_conversation = "\n".join([
-        f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
-        for m in state["messages"]
-    ])
+    full_conversation = _format_conversation(state["messages"])
 
+    preloaded = _preload_all_skills()
+    if preloaded:
+        print(f"=== Planner === Pre-loaded all skills from DB: {preloaded}")
+
+    # ── Build tool list (includes any newly pre-loaded skills) ────────────────
     tool_list_lines = []
     for tool_name, tool_obj in TOOL_REGISTRY.items():
         description = getattr(tool_obj, "description", "") or ""
@@ -160,13 +244,15 @@ def planner_node(state: main_state):
          "## RULES:\n"
          "1. Each plan step → exactly ONE agent. agent_name must match exactly in agent_specs.\n"
          "2. tools_required must only contain tool names from AVAILABLE TOOLS above.\n"
-         "3. tools_required CAN be empty [] for pure analysis/reasoning agents that need no external data.\n"
+         "3. tools_required CAN be empty [] ONLY for pure text analysis/summarization/reasoning agents that produce no numeric result.\n"
+         "   NEVER leave tools_required empty when the task involves math, formulas, or numeric calculations.\n"
          "4. Agents in later steps AUTOMATICALLY receive results from all previous steps as context.\n"
          "   So a later step does NOT need to re-fetch data already retrieved in an earlier step.\n"
          "5. ALWAYS split multi-part requests into multiple steps. Never collapse into 1 step if multiple things are needed.\n"
          "6. For analysis that combines data sources: fetch in early steps, reason/analyze in later steps.\n"
-         "7. For ANY calculation or formula-based task (BMI, compound interest, unit conversion, etc.):\n"
-         "   ALWAYS create a reusable tool first with manage_skill, then use it in the next step.\n\n"
+         "7. For ANY calculation or formula-based task (BMI, calories, compound interest, unit conversion, kinematics, etc.):\n"
+         "   FIRST check AVAILABLE TOOLS — if a ready-made tool already exists there, use it directly (no manage_skill needed).\n"
+         "   If NO suitable tool exists → you MUST add manage_skill to tools_required to create one. DO NOT attempt the calculation without a tool.\n\n"
 
          "## EXAMPLE — 'Weather in Thailand + stocks worth buying based on weather':\n"
          "  Step 1: WeatherAgent   tools=[weather]  — fetch current weather in Thailand\n"
@@ -176,7 +262,10 @@ def planner_node(state: main_state):
          "  Step 1: StockFetcher  tools=[stock]  — fetch AAPL and MSFT data\n"
          "  Step 2: Analyst       tools=[]       — compare and summarize\n\n"
 
-         "## EXAMPLE — 'Calculate BMI / any formula-based task':\n"
+         "## EXAMPLE — 'Calculate BMI' (when calculate_bmi already in AVAILABLE TOOLS):\n"
+         "  Step 1: Calculator    tools=[calculate_bmi]  — call the tool with the user's values\n\n"
+
+         "## EXAMPLE — 'Calculate BMI' (when NO bmi tool in AVAILABLE TOOLS):\n"
          "  Step 1: SkillMaker    tools=[manage_skill]  — create a Python @tool for the calculation\n"
          "  Step 2: Calculator    tools=[<tool_name>]   — call the created tool with the user's values\n\n"
 
@@ -221,7 +310,7 @@ def plan_observer_node(state: main_state):
 
 
 def agent_observer_node(state: main_state):
-    """ตรวจสอบว่า agent_specs ครบถ้วน — unknown tools จะถูกสร้างโดย action_observer อัตโนมัติ"""
+    """ตรวจสอบว่า agent_specs ครบถ้วน — unknown tools จะถูกสร้างโดย skill_maker"""
     agent_specs = state.get("agent_specs", [])
 
     for spec in agent_specs:
@@ -230,22 +319,19 @@ def agent_observer_node(state: main_state):
             return {"agents_ready": False}
         unknown = [t for t in spec.get("tools_required", []) if t not in TOOL_REGISTRY]
         if unknown:
-            print(f"=== Agent Observer === NOTE: '{spec['name']}' uses unknown tools {unknown} — will be created at runtime")
+            print(f"=== Agent Observer === NOTE: '{spec['name']}' uses unknown tools {unknown} — will be created by skill_maker")
 
     print(f"=== Agent Observer === OK: all {len(agent_specs)} specs valid")
     return {"agents_ready": True}
 
 
 def action_observer_node(state: main_state):
-    """Dynamic agent runner — search skill inline, route to skill_maker if not found"""
+    """Dynamic agent runner — route to skill_maker on manage_skill, else run assigned tools."""
     plan_steps = sorted(state.get("plan_steps", []), key=lambda s: s["step_id"])
     specs_by_name = {spec["name"]: spec for spec in state.get("agent_specs", [])}
     current_step_idx = state.get("current_step_idx", 0)
 
-    full_conversation = "\n".join([
-        f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
-        for m in state["messages"]
-    ])
+    full_conversation = _format_conversation(state["messages"])
 
     # โหลด agent_results สะสมจาก state (อาจมีผลจาก round ก่อนหน้า)
     collected_results = dict(state.get("agent_results") or {})
@@ -258,26 +344,14 @@ def action_observer_node(state: main_state):
 
         print(f"=== Action Observer === Step {step['step_id']}: running '{agent_name}'")
 
-        # ── If the step needs manage_skill → search DB first ────────────────
+        # ── manage_skill step → skills preloaded before planning, just create ──
         if "manage_skill" in spec.get("tools_required", []):
-            search_output = TOOLS_SEARCH.invoke({"query": step["description"], "limit": 1})
-            print(f"=== Action Observer === search_skill: {search_output[:120]}...")
-
-            if "No matching skills found" not in search_output:
-                registered_name = _search_and_register_skill(step["description"])
-                if registered_name:
-                    print(f"=== Action Observer === Reused '{registered_name}' from DB")
-                    collected_results[agent_name] = search_output
-                    continue
-
-            # Not found in DB → route to skill_maker to create it
-            print(f"=== Action Observer === '{agent_name}' needs new skill → routing to skill_maker")
+            print(f"=== Action Observer === '{agent_name}' → routing to skill_maker")
             return {
                 "agent_results": collected_results,
                 "current_step_idx": i,
                 "pending_skill_step": step,
             }
-            continue
 
         # Resolve tools — skip unknown ones
         missing_tools = [t for t in spec["tools_required"] if t not in TOOL_REGISTRY]
@@ -303,10 +377,7 @@ def action_observer_node(state: main_state):
         )
 
         # Pass results from previous steps as context
-        prev_results_str = ""
-        if collected_results:
-            parts = [f"### {n}:\n{r}" for n, r in collected_results.items()]
-            prev_results_str = "\n\n## RESULTS FROM PREVIOUS STEPS (use as input context):\n" + "\n\n".join(parts)
+        prev_results_str = _format_prev_results(collected_results, "RESULTS FROM PREVIOUS STEPS (use as input context)")
 
         messages = [
             {"role": "system", "content": system},
@@ -332,23 +403,24 @@ def skill_maker_node(state: main_state):
     print(f"=== Skill Maker === Step {step.get('step_id')}: creating tool for '{agent_name}'")
 
     collected_results = dict(state.get("agent_results") or {})
-    prev_results_str = ""
-    if collected_results:
-        parts = [f"### {n}:\n{r}" for n, r in collected_results.items()]
-        prev_results_str = "\n\n## RESULTS FROM PREVIOUS STEPS:\n" + "\n\n".join(parts)
+    prev_results_str = _format_prev_results(collected_results, "RESULTS FROM PREVIOUS STEPS")
 
     skill_system = (
         "You are a Tool-Making Agent.\n\n"
         "## CRITICAL RULES:\n"
-        "1. ALWAYS start source_code with exactly this import:\n"
-        "   from langchain_core.tools import tool\n"
-        "   NEVER use agent_toolkit, langchain.tools, or any other import.\n\n"
-        "2. Name the skill clearly in snake_case that describes what it does.\n"
+        "1. Do NOT include any import for `tool`. The `@tool` decorator is already available in scope.\n"
+        "   NEVER write: from langchain_core.tools import tool\n"
+        "   NEVER write: from agent_toolkit import tool\n"
+        "   Just use @tool directly on your function.\n\n"
+        "2. You MAY import other standard libraries (typing, math, etc.) or pydantic if needed.\n\n"
+        "3. Name the skill clearly in snake_case that describes what it does.\n"
         "   Good: calculate_bmi, convert_currency, fetch_stock_price\n"
         "   Bad: bmi_tool, tool1, my_calculator\n\n"
+        "4. Write clean, valid Python only. No unicode math symbols (use *, **, /, ^ instead).\n"
+        "   No duplicate lines. No typos in variable names.\n\n"
         "## STEPS:\n"
         "1. Understand what capability is needed.\n"
-        "2. Write a Python @tool function as source_code.\n"
+        "2. Write a Python @tool function as source_code (no tool import needed).\n"
         "3. Write a short description.\n"
         "4. Write arguments as a valid JSON string for tool_schema_json.\n"
         "5. Call manage_skill to save it to the memory database.\n"
@@ -361,12 +433,19 @@ def skill_maker_node(state: main_state):
             {"role": "user",   "content": step.get("description", "") + prev_results_str},
         ]})
 
-        # Search after creation → register into TOOL_REGISTRY
-        registered_name = _search_and_register_skill(step.get("description", ""))
+        # Register created skill immediately from success message (no extra search needed)
+        registered_name = _extract_created_skill_name(skill_result)
         if registered_name:
-            print(f"=== Skill Maker === Registered '{registered_name}' into TOOL_REGISTRY")
+            loaded = _preload_skills_into_registry(registered_name)
+            if not loaded:
+                print(f"=== Skill Maker === Could not load '{registered_name}' from DB yet")
+            else:
+                print(f"=== Skill Maker === Registered '{registered_name}' into TOOL_REGISTRY")
+        else:
+            print("=== Skill Maker === Could not extract created skill name from agent output")
 
         # Patch agent_specs: replace placeholder tool names with the registered one
+        # Always patch when we know the registered name, regardless of exec success
         updated_specs = state.get("agent_specs", [])
         if registered_name:
             updated_specs = []
@@ -377,7 +456,7 @@ def skill_maker_node(state: main_state):
                     for t in spec.get("tools_required", [])
                 ]
                 updated_specs.append(spec)
-            print(f"=== Skill Maker === Patched agent_specs with '{registered_name}'")
+            print(f"=== Skill Maker === Patched agent_specs with '{registered_name}' (in TOOL_REGISTRY: {registered_name in TOOL_REGISTRY})")
 
         print(f"=== Skill Maker === Done → back to action_observer (step {state.get('current_step_idx', 0) + 1})")
         return {
@@ -430,11 +509,7 @@ def route_after_action_observer(state: main_state):
 
 # Fusion and presentation nodes
 def fusion_node(state: main_state):
-    # ใช้ full conversation เพื่อให้รู้โจทย์หลักและข้อมูลที่ clarify มาทั้งหมด
-    full_conversation = "\n".join([
-        f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
-        for m in state["messages"]
-    ])
+    full_conversation = _format_conversation(state["messages"])
     raw_data = state.get('agent_results', {})
     agent_specs = state.get('agent_specs', [])
 
