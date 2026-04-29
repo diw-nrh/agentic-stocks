@@ -51,8 +51,8 @@ def search_skills(session: Session, query: str, limit: int = 3):
     # Phase 1: Try finding skills that share exact keywords AND sort by semantic closeness
     stmt = select(Skill).where(
         or_(
-            Skill.name.ilike(f"%{query}%"),
-            Skill.description.ilike(f"%{query}%")
+            Skill.name.ilike(f"%{technical_query}%"),
+            Skill.description.ilike(f"%{technical_query}%")
         )
     ).order_by(Skill.embedding.cosine_distance(query_vector)).limit(limit)
     
