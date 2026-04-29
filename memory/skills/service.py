@@ -11,7 +11,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 # Create Embedding Model 
 embeddings_model = OpenAIEmbeddings(
-    model="text-embedding-ada-002",
+    model="qwen/qwen3-embedding-8b",
     api_key=Config.AI.NOVITA_API_KEY,
     base_url=Config.AI.BASE_URL
 )
