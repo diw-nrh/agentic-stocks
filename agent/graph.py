@@ -339,6 +339,13 @@ def skill_maker_node(state: main_state):
 
     skill_system = (
         "You are a Tool-Making Agent.\n\n"
+        "## CRITICAL RULES:\n"
+        "1. ALWAYS start source_code with exactly this import:\n"
+        "   from langchain_core.tools import tool\n"
+        "   NEVER use agent_toolkit, langchain.tools, or any other import.\n\n"
+        "2. Name the skill clearly in snake_case that describes what it does.\n"
+        "   Good: calculate_bmi, convert_currency, fetch_stock_price\n"
+        "   Bad: bmi_tool, tool1, my_calculator\n\n"
         "## STEPS:\n"
         "1. Understand what capability is needed.\n"
         "2. Write a Python @tool function as source_code.\n"

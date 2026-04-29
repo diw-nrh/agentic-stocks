@@ -18,7 +18,7 @@ class SkillSearchRequest(BaseModel):
     query: str
     limit: int = 3
 
-@router.post("/search")
+@router.get("/search")
 def search_endpoint(req: SkillSearchRequest, session: Session = Depends(get_session)):
     results = service.search_skills(session, req.query, req.limit)
     return {"results": [
