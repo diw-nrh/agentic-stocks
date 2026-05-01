@@ -1,5 +1,5 @@
 ---
-name: stock-skill
+name: stock
 description: Get stock data for countries and cities, including current conditions, forecasts, and historical trends.
 allowed-tools: [stock]
 ---
