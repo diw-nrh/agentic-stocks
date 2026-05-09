@@ -8,8 +8,6 @@ from tools.mcp.weather_tool import weather_tool as mcp_weather
 from tools.mcp.stock_tool import stock_tool as mcp_stock
 from tools.mcp.news_tool import news_tool as mcp_news
 
-SKILLS_DIR = "skills"
-
 def get_select_skills_prompt(path: str) -> str:
     all_prompts = []
     skill_path = os.path.join(path, "SKILL.md")

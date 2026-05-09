@@ -1,5 +1,5 @@
 ---
-name: weather_skill
+name: weather
 description: Get weather data for countries and cities, including current conditions, forecasts, and historical trends.
 allowed-tools: [weather]
 ---

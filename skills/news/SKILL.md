@@ -1,5 +1,5 @@
 ---
-name: news_skill
+name: news
 description: Get news data for countries and cities, including current conditions, forecasts, and historical trends.
 allowed-tools: [news]
 ---
